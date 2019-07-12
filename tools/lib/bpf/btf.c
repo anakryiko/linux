@@ -59,6 +59,8 @@ struct btf_ext {
 	};
 	struct btf_ext_info func_info;
 	struct btf_ext_info line_info;
+	struct btf_ext_info offset_reloc_info;
+	struct btf_ext_info extern_reloc_info;
 	__u32 data_size;
 };
 
@@ -81,6 +83,19 @@ struct bpf_line_info_min {
 	__u32	file_name_off;
 	__u32	line_off;
 	__u32	line_col;
+};
+
+/* The minimum bpf_offset_reloc checked by the loader */
+struct bpf_offset_reloc {
+	__u32   insn_off;
+	__u32   type_id;
+	__u32   access_str_off;
+};
+
+/* The minimum bpf_extern_reloc checked by the loader */
+struct bpf_extern_reloc {
+	__u32   insn_off;
+	__u32   name_off;
 };
 
 static inline __u64 ptr_to_u64(const void *ptr)
@@ -831,6 +846,9 @@ static int btf_ext_setup_info(struct btf_ext *btf_ext,
 	/* The start of the info sec (including the __u32 record_size). */
 	void *info;
 
+	if (ext_sec->len == 0)
+		return 0;
+
 	if (ext_sec->off & 0x03) {
 		pr_debug(".BTF.ext %s section is not aligned to 4 bytes\n",
 		     ext_sec->desc);
@@ -934,6 +952,32 @@ static int btf_ext_setup_line_info(struct btf_ext *btf_ext)
 	return btf_ext_setup_info(btf_ext, &param);
 }
 
+static int btf_ext_setup_offset_reloc(struct btf_ext *btf_ext)
+{
+	struct btf_ext_sec_setup_param param = {
+		.off = btf_ext->hdr->offset_reloc_off,
+		.len = btf_ext->hdr->offset_reloc_len,
+		.min_rec_size = sizeof(struct bpf_offset_reloc),
+		.ext_info = &btf_ext->offset_reloc_info,
+		.desc = "offset_reloc",
+	};
+
+	return btf_ext_setup_info(btf_ext, &param);
+}
+
+static int btf_ext_setup_extern_reloc(struct btf_ext *btf_ext)
+{
+	struct btf_ext_sec_setup_param param = {
+		.off = btf_ext->hdr->extern_reloc_off,
+		.len = btf_ext->hdr->extern_reloc_len,
+		.min_rec_size = sizeof(struct bpf_extern_reloc),
+		.ext_info = &btf_ext->extern_reloc_info,
+		.desc = "extern_reloc",
+	};
+
+	return btf_ext_setup_info(btf_ext, &param);
+}
+
 static int btf_ext_parse_hdr(__u8 *data, __u32 data_size)
 {
 	const struct btf_ext_header *hdr = (struct btf_ext_header *)data;
@@ -1004,6 +1048,20 @@ struct btf_ext *btf_ext__new(__u8 *data, __u32 size)
 	if (err)
 		goto done;
 
+	/* check if there is offset_reloc_off/offset_reloc_len fields */
+	if (btf_ext->hdr->hdr_len < offsetof(struct btf_ext_header,
+					     extern_reloc_len))
+		goto done;
+	err = btf_ext_setup_offset_reloc(btf_ext);
+	if (err)
+		goto done;
+
+	/* check if there is extern_reloc_off/extern_reloc_len fields */
+	if (btf_ext->hdr->hdr_len < sizeof(struct btf_ext_header))
+		goto done;
+	err = btf_ext_setup_extern_reloc(btf_ext);
+	if (err)
+		goto done;
 done:
 	if (err) {
 		btf_ext__free(btf_ext);
