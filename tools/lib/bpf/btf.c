@@ -42,62 +42,6 @@ struct btf {
 	int fd;
 };
 
-struct btf_ext_info {
-	/*
-	 * info points to the individual info section (e.g. func_info and
-	 * line_info) from the .BTF.ext. It does not include the __u32 rec_size.
-	 */
-	void *info;
-	__u32 rec_size;
-	__u32 len;
-};
-
-struct btf_ext {
-	union {
-		struct btf_ext_header *hdr;
-		void *data;
-	};
-	struct btf_ext_info func_info;
-	struct btf_ext_info line_info;
-	struct btf_ext_info offset_reloc_info;
-	struct btf_ext_info extern_reloc_info;
-	__u32 data_size;
-};
-
-struct btf_ext_info_sec {
-	__u32	sec_name_off;
-	__u32	num_info;
-	/* Followed by num_info * record_size number of bytes */
-	__u8	data[0];
-};
-
-/* The minimum bpf_func_info checked by the loader */
-struct bpf_func_info_min {
-	__u32   insn_off;
-	__u32   type_id;
-};
-
-/* The minimum bpf_line_info checked by the loader */
-struct bpf_line_info_min {
-	__u32	insn_off;
-	__u32	file_name_off;
-	__u32	line_off;
-	__u32	line_col;
-};
-
-/* The minimum bpf_offset_reloc checked by the loader */
-struct bpf_offset_reloc {
-	__u32   insn_off;
-	__u32   type_id;
-	__u32   access_str_off;
-};
-
-/* The minimum bpf_extern_reloc checked by the loader */
-struct bpf_extern_reloc {
-	__u32   insn_off;
-	__u32   name_off;
-};
-
 static inline __u64 ptr_to_u64(const void *ptr)
 {
 	return (__u64) (unsigned long) ptr;
