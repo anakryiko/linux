@@ -38,9 +38,19 @@ typedef __u16 __sum16;
 #include "trace_helpers.h"
 #include "flow_dissector_load.h"
 
-extern int error_cnt, pass_cnt;
-extern bool jit_enabled;
-extern bool verifier_stats;
+struct test_env {
+	const char *test_selector;
+	bool verifier_stats;
+	bool verbose;
+	bool summary_only;
+	bool full_summary;
+
+	bool jit_enabled;
+};
+
+extern int error_cnt;
+extern int pass_cnt;
+extern struct test_env env;
 
 #define MAGIC_BYTES 123
 
@@ -64,11 +74,16 @@ extern struct ipv6_packet pkt_v6;
 	int __ret = !!(condition);					\
 	if (__ret) {							\
 		error_cnt++;						\
-		printf("%s:FAIL:%s ", __func__, tag);			\
-		printf(format);						\
+		if (!env.summary_only) {				\
+			printf("%s:FAIL:%s ", __func__, tag);		\
+			printf(format);					\
+		}							\
 	} else {							\
 		pass_cnt++;						\
-		printf("%s:PASS:%s %d nsec\n", __func__, tag, duration);\
+		if (!env.summary_only) {				\
+			printf("%s:PASS:%s %d nsec\n",			\
+			       __func__, tag, duration);		\
+		}							\
 	}								\
 	__ret;								\
 })

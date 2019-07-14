@@ -6,9 +6,9 @@
 #include <argp.h>
 #include <string.h>
 
+/* defined in test_progs.h */
+struct test_env env = {};
 int error_cnt, pass_cnt;
-bool jit_enabled;
-bool verifier_stats = false;
 
 struct ipv4_packet pkt_v4 = {
 	.eth.h_proto = __bpf_constant_htons(ETH_P_IP),
@@ -166,16 +166,20 @@ void *spin_lock_thread(void *arg)
 struct prog_test_def {
 	const char *test_name;
 	void (*run_test)(void);
+	int pass_cnt;
+	int error_cnt;
+	bool tested;
 };
 
 static struct prog_test_def prog_test_defs[] = {
-#define DEFINE_TEST(name) {	      \
-	.test_name = #name,	      \
-	.run_test = &test_##name,   \
+#define DEFINE_TEST(name) {		\
+	.test_name = #name,		\
+	.run_test = &test_##name,	\
 },
 #include <prog_tests/tests.h>
 #undef DEFINE_TEST
 };
+const int prog_test_cnt = ARRAY_SIZE(prog_test_defs);
 
 const char *argp_program_version = "test_progs 0.1";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
@@ -185,6 +189,9 @@ enum ARG_KEYS {
 	ARG_NAME = 'n',
 	ARG_VERIFIER_STATS = 's',
 	ARG_VERBOSE = 'v',
+
+	ARG_SUMMARY_ONLY = 1,
+	ARG_FULL_SUMMARY = 2,
 };
 	
 static const struct argp_option opts[] = {
@@ -192,20 +199,17 @@ static const struct argp_option opts[] = {
 	{ "verifier-stats", ARG_VERIFIER_STATS, NULL, 0,
 	  "Output verifier statistics", },
 	{ "verbose", ARG_VERBOSE, NULL, 0, "Verbose logging" },
+	{ "summary-only", ARG_SUMMARY_ONLY, NULL, 0, "Emit summary only" },
+	{ "full-summary", ARG_FULL_SUMMARY, NULL, 0,
+	  "Show passed tests in summary" },
 	{},
 };
-
-struct test_env {
-	const char *test_selector;
-	bool verifier_stats;
-	bool verbose;
-};
-
-static struct test_env env = {};
 
 static int libbpf_print_fn(enum libbpf_print_level level,
 			   const char *format, va_list args)
 {
+	if (env.summary_only)
+		return 0;
 	if (!env.verbose && level == LIBBPF_DEBUG)
 		return 0;
 	return vfprintf(stderr, format, args);
@@ -225,6 +229,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case ARG_VERBOSE:
 		env->verbose = true;
 		break;
+	case ARG_SUMMARY_ONLY:
+		env->summary_only = true;
+		break;
+	case ARG_FULL_SUMMARY:
+		env->full_summary = true;
+		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
 		break;
@@ -236,6 +246,54 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
+void print_summary() {
+#define TEST_MAX_LEN 40
+	const char *SEP_FMT = "%1$40.40s %1$10.10s %1$10.10s %1$10.10s\n";
+	const char *HEADER_FMT = "%-40s %-10s %10s %10s\n";
+	const char *TEST_FMT = "%-40.40s %-10s %10d %10d\n";
+	char single_line[TEST_MAX_LEN + 1] = {};
+	char double_line[TEST_MAX_LEN + 1] = {};
+	char succ_summary[64], fail_summary[64];
+	int i, succ_cnt = 0, fail_cnt = 0;
+
+	memset(single_line, '-', TEST_MAX_LEN);
+	memset(double_line, '=', TEST_MAX_LEN);
+
+	printf(SEP_FMT, double_line);
+	printf(HEADER_FMT, "Test name", "Verdict", "Passes", "Fails");
+	printf(SEP_FMT, single_line);
+
+	for (i = 0; i < prog_test_cnt; i++) {
+		const struct prog_test_def *def = &prog_test_defs[i];
+		const char *verdict;
+		bool to_print;
+
+		if (!def->tested) {
+			verdict = "SKIPPED";
+		} else if (def->error_cnt) {
+			verdict = "FAILED";
+			fail_cnt++;
+		} else {
+			verdict = "PASSED";
+			succ_cnt++;
+		}
+
+		/* emit successes in selective testing mode regardless */
+		to_print = env.full_summary || def->error_cnt ||
+			   (env.test_selector && def->tested);
+		if (!to_print)
+			continue;
+
+		printf(TEST_FMT, def->test_name, verdict,
+		       def->pass_cnt, def->error_cnt);
+	}
+	printf(SEP_FMT, single_line);
+	sprintf(succ_summary, "%d (%d)", succ_cnt, pass_cnt);
+	sprintf(fail_summary, "%d (%d)", fail_cnt, error_cnt);
+	printf(HEADER_FMT, "SUMMARY", error_cnt ? "FAILURE" : "SUCCESS",
+	       succ_summary, fail_summary);
+	printf(SEP_FMT, double_line);
+}
 
 int main(int argc, char **argv)
 {
@@ -244,7 +302,6 @@ int main(int argc, char **argv)
 		.parser = parse_arg,
 		.doc = argp_program_doc,
 	};
-	const struct prog_test_def *def;
 	int err, i;
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, &env);
@@ -255,18 +312,24 @@ int main(int argc, char **argv)
 
 	srand(time(NULL));
 
-	jit_enabled = is_jit_enabled();
+	env.jit_enabled = is_jit_enabled();
 
-	verifier_stats = env.verifier_stats;
+	for (i = 0; i < prog_test_cnt; i++) {
+		struct prog_test_def *def = &prog_test_defs[i];
+		int old_pass_cnt = pass_cnt;
+		int old_error_cnt = error_cnt;
 
-	for (i = 0; i < ARRAY_SIZE(prog_test_defs); i++) {
-		def = &prog_test_defs[i];
 		if (env.test_selector &&
-		    !strstr(def->test_name, env.test_selector))
+		    !strstr(def->test_name, env.test_selector)) {
 			continue;
+		}
+
 		def->run_test();
+		def->tested = true;
+		def->pass_cnt = pass_cnt - old_pass_cnt;
+		def->error_cnt = error_cnt - old_error_cnt;
 	}
 
-	printf("Summary: %d PASSED, %d FAILED\n", pass_cnt, error_cnt);
+	print_summary();
 	return error_cnt ? EXIT_FAILURE : EXIT_SUCCESS;
 }
