@@ -79,6 +79,14 @@ void libbpf_set_print(libbpf_print_fn_t fn)
 	__libbpf_pr = fn;
 }
 
+libbpf_print_fn_t libbpf_swap_print(libbpf_print_fn_t fn)
+{
+	libbpf_print_fn_t old_print_fn = __libbpf_pr;
+
+	__libbpf_pr = fn;
+	return old_print_fn;
+}
+
 __printf(2, 3)
 void libbpf_print(enum libbpf_print_level level, const char *format, ...)
 {

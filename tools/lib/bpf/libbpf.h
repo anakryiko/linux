@@ -58,6 +58,7 @@ typedef int (*libbpf_print_fn_t)(enum libbpf_print_level level,
 				 const char *, va_list ap);
 
 LIBBPF_API void libbpf_set_print(libbpf_print_fn_t fn);
+LIBBPF_API libbpf_print_fn_t libbpf_swap_print(libbpf_print_fn_t fn);
 
 /* Hide internal to user */
 struct bpf_object;
