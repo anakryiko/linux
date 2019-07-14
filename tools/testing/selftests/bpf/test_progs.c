@@ -184,21 +184,32 @@ const char argp_program_doc[] = "BPF selftests test runner";
 enum ARG_KEYS {
 	ARG_NAME = 'n',
 	ARG_VERIFIER_STATS = 's',
+	ARG_VERBOSE = 'v',
 };
 	
 static const struct argp_option opts[] = {
 	{ "name", ARG_NAME, "NAME", 0, "Run tests which names contain NAME" },
 	{ "verifier-stats", ARG_VERIFIER_STATS, NULL, 0,
 	  "Output verifier statistics", },
+	{ "verbose", ARG_VERBOSE, NULL, 0, "Verbose logging" },
 	{},
 };
 
 struct test_env {
 	const char *test_selector;
 	bool verifier_stats;
+	bool verbose;
 };
 
 static struct test_env env = {};
+
+static int libbpf_print_fn(enum libbpf_print_level level,
+			   const char *format, va_list args)
+{
+	if (!env.verbose && level == LIBBPF_DEBUG)
+		return 0;
+	return vfprintf(stderr, format, args);
+}
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
@@ -210,6 +221,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case ARG_VERIFIER_STATS:
 		env->verifier_stats = true;
+		break;
+	case ARG_VERBOSE:
+		env->verbose = true;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -236,6 +250,8 @@ int main(int argc, char **argv)
 	err = argp_parse(&argp, argc, argv, 0, NULL, &env);
 	if (err)
 		return err;
+
+	libbpf_set_print(libbpf_print_fn);
 
 	srand(time(NULL));
 
