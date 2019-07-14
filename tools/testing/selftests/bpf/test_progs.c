@@ -4,6 +4,7 @@
 #include "test_progs.h"
 #include "bpf_rlimit.h"
 #include <argp.h>
+#include <string.h>
 
 int error_cnt, pass_cnt;
 bool jit_enabled;
@@ -181,16 +182,19 @@ const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
 const char argp_program_doc[] = "BPF selftests test runner";
 
 enum ARG_KEYS {
+	ARG_NAME = 'n',
 	ARG_VERIFIER_STATS = 's',
 };
 	
 static const struct argp_option opts[] = {
+	{ "name", ARG_NAME, "NAME", 0, "Run tests which names contain NAME" },
 	{ "verifier-stats", ARG_VERIFIER_STATS, NULL, 0,
 	  "Output verifier statistics", },
 	{},
 };
 
 struct test_env {
+	const char *test_selector;
 	bool verifier_stats;
 };
 
@@ -201,6 +205,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	struct test_env *env = state->input;
 
 	switch (key) {
+	case ARG_NAME:
+		env->test_selector = arg;
+		break;
 	case ARG_VERIFIER_STATS:
 		env->verifier_stats = true;
 		break;
@@ -238,6 +245,9 @@ int main(int argc, char **argv)
 
 	for (i = 0; i < ARRAY_SIZE(prog_test_defs); i++) {
 		def = &prog_test_defs[i];
+		if (env.test_selector &&
+		    !strstr(def->test_name, env.test_selector))
+			continue;
 		def->run_test();
 	}
 
