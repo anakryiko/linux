@@ -379,6 +379,7 @@ done:
 
 static int do_dump(int argc, char **argv)
 {
+	struct btf_ext *btf_ext = NULL;
 	struct btf *btf = NULL;
 	__u32 root_type_ids[2];
 	int root_type_cnt = 0;
@@ -454,7 +455,7 @@ static int do_dump(int argc, char **argv)
 		}
 		NEXT_ARG();
 	} else if (is_prefix(src, "file")) {
-		btf = btf__parse_elf(*argv, NULL);
+		btf = btf__parse_elf(*argv, &btf_ext);
 		if (IS_ERR(btf)) {
 			err = PTR_ERR(btf);
 			btf = NULL;
@@ -515,6 +516,8 @@ static int do_dump(int argc, char **argv)
 	} else {
 		err = dump_btf_raw(btf, root_type_ids, root_type_cnt);
 	}
+
+	btf_ext_dump(btf, btf_ext);
 
 done:
 	close(fd);

@@ -126,6 +126,7 @@ LIBBPF_API void btf_dump__free(struct btf_dump *d);
 
 LIBBPF_API int btf_dump__dump_type(struct btf_dump *d, __u32 id);
 
+void btf_ext_dump(const struct btf *btf, const struct btf_ext *btf_ext);
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

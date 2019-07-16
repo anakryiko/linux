@@ -963,6 +963,55 @@ void btf_ext__free(struct btf_ext *btf_ext)
 	free(btf_ext);
 }
 
+void btf_ext_dump(const struct btf *btf, const struct btf_ext *btf_ext)
+{
+	const struct btf_ext_info *seg;
+	const struct btf_ext_info_sec *sec;
+	int i;
+
+	return;
+
+	seg = &btf_ext->func_info;
+	for_each_btf_ext_sec(seg, sec) {
+		const struct bpf_func_info_min *rec;
+
+		printf("func sec '%s' (%d records):\n", btf__name_by_offset(btf, sec->sec_name_off), sec->num_info);
+		for_each_btf_ext_rec(seg, sec, i, rec) {
+			printf("\trec #%d: insn_off=%d, type_id=%d\n", i, rec->insn_off, rec->type_id);
+		}
+	}
+
+	seg = &btf_ext->line_info;
+	for_each_btf_ext_sec(seg, sec) {
+		const struct bpf_line_info_min *rec;
+
+		printf("line sec '%s' (%d records):\n", btf__name_by_offset(btf, sec->sec_name_off), sec->num_info);
+		for_each_btf_ext_rec(seg, sec, i, rec) {
+			printf("\trec #%d: insn_off=%d\n", i, rec->insn_off);
+		}
+	}
+
+	seg = &btf_ext->offset_reloc_info;
+	for_each_btf_ext_sec(seg, sec) {
+		const struct bpf_offset_reloc *rec;
+
+		printf("offset reloc sec '%s' (%d records):\n", btf__name_by_offset(btf, sec->sec_name_off), sec->num_info);
+		for_each_btf_ext_rec(seg, sec, i, rec) {
+			printf("\trec #%d: insn_off=%d, [%d] -> %s\n", i, rec->insn_off, rec->type_id, btf__name_by_offset(btf, rec->access_str_off));
+		}
+	}
+
+	seg = &btf_ext->extern_reloc_info;
+	for_each_btf_ext_sec(seg, sec) {
+		const struct bpf_extern_reloc *rec;
+
+		printf("extern reloc sec '%s' (%d records):\n", btf__name_by_offset(btf, sec->sec_name_off), sec->num_info);
+		for_each_btf_ext_rec(seg, sec, i, rec) {
+			printf("\trec #%d: insn_off=%d -> %s\n", i, rec->insn_off, btf__name_by_offset(btf, rec->name_off));
+		}
+	}
+}
+
 struct btf_ext *btf_ext__new(__u8 *data, __u32 size)
 {
 	struct btf_ext *btf_ext;
