@@ -92,23 +92,27 @@ vmlinux_link()
 }
 
 # generate .BTF typeinfo from DWARF debuginfo
+# ${1} - vmlinux image
 gen_btf()
 {
-	local pahole_ver;
+	local pahole_ver
 
 	if ! [ -x "$(command -v ${PAHOLE})" ]; then
 		info "BTF" "${1}: pahole (${PAHOLE}) is not available"
-		return 0
+		return 1
 	fi
 
 	pahole_ver=$(${PAHOLE} --version | sed -E 's/v([0-9]+)\.([0-9]+)/\1\2/')
 	if [ "${pahole_ver}" -lt "113" ]; then
 		info "BTF" "${1}: pahole version $(${PAHOLE} --version) is too old, need at least v1.13"
-		return 0
+		return 1
 	fi
 
 	info "BTF" ${1}
-	LLVM_OBJCOPY=${OBJCOPY} ${PAHOLE} -J ${1}
+	vmlinux_link "" ${1}
+	${PAHOLE} -J ${1}
+
+	${OBJCOPY} --dump-section .BTF=.btf.kernel.bin ${1} 2>/dev/null
 }
 
 # Create ${2} .o file with all symbols from the ${1} object file
@@ -153,6 +157,7 @@ sortextable()
 # Delete output files in case of error
 cleanup()
 {
+	rm -f .btf.*
 	rm -f .tmp_System.map
 	rm -f .tmp_kallsyms*
 	rm -f .tmp_vmlinux*
@@ -215,6 +220,10 @@ ${MAKE} -f "${srctree}/scripts/Makefile.modpost" vmlinux.o
 info MODINFO modules.builtin.modinfo
 ${OBJCOPY} -j .modinfo -O binary vmlinux.o modules.builtin.modinfo
 
+if [ -n "${CONFIG_DEBUG_INFO_BTF}" ]; then
+	gen_btf .tmp_vmlinux.btf
+fi
+
 kallsymso=""
 kallsyms_vmlinux=""
 if [ -n "${CONFIG_KALLSYMS}" ]; then
@@ -269,10 +278,6 @@ fi
 
 info LD vmlinux
 vmlinux_link "${kallsymso}" vmlinux
-
-if [ -n "${CONFIG_DEBUG_INFO_BTF}" ]; then
-	gen_btf vmlinux
-fi
 
 if [ -n "${CONFIG_BUILDTIME_EXTABLE_SORT}" ]; then
 	info SORTEX vmlinux

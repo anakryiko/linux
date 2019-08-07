@@ -22,3 +22,11 @@ obj-$(CONFIG_CGROUP_BPF) += cgroup.o
 ifeq ($(CONFIG_INET),y)
 obj-$(CONFIG_BPF_SYSCALL) += reuseport_array.o
 endif
+
+obj-$(CONFIG_DEBUG_INFO_BTF) += sysfs_btf.o
+extra-$(CONFIG_DEBUG_INFO_BTF) += .btf.kernel.bin
+
+$(obj)/.btf.kernel.bin:
+	$(Q)touch -a $(obj)/.btf.kernel.bin
+
+$(obj)/sysfs_btf.o: $(obj)/.btf.kernel.bin
