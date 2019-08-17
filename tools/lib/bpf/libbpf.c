@@ -5900,7 +5900,7 @@ void bpf_program__bpil_offs_to_addr(struct bpf_prog_info_linear *info_linear)
 
 int libbpf_num_possible_cpus(void)
 {
-	static const char *fcpu = "/sys/devices/system/cpu/possible";
+	static const char *fcpu = "/sys/devices/system/cpu/present";
 	int len = 0, n = 0, il = 0, ir = 0;
 	unsigned int start = 0, end = 0;
 	static int cpus;
