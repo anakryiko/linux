@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <bpf.h>
 #include <libbpf.h>
@@ -388,6 +390,41 @@ done:
 	return err;
 }
 
+static struct btf *btf_load_raw(const char *path)
+{
+	struct btf *btf;
+	size_t read_cnt;
+	struct stat st;
+	void *data;
+	FILE *f;
+
+	if (stat(path, &st))
+		return ERR_PTR(-errno);
+
+	data = malloc(st.st_size);
+	if (!data)
+		return ERR_PTR(-ENOMEM);
+
+	f = fopen(path, "rb");
+	if (!f) {
+		btf = ERR_PTR(-errno);
+		goto cleanup;
+	}
+
+	read_cnt = fread(data, 1, st.st_size, f);
+	fclose(f);
+	if (read_cnt < st.st_size) {
+		btf = ERR_PTR(-EBADF);
+		goto cleanup;
+	}
+
+	btf = btf__new(data, read_cnt);
+
+cleanup:
+	free(data);
+	return btf;
+}
+
 static int do_dump(int argc, char **argv)
 {
 	struct btf *btf = NULL;
@@ -465,7 +502,10 @@ static int do_dump(int argc, char **argv)
 		}
 		NEXT_ARG();
 	} else if (is_prefix(src, "file")) {
-		btf = btf__parse_elf(*argv, NULL);
+		btf = btf_load_raw(*argv);
+		if (IS_ERR(btf))
+			btf = btf__parse_elf(*argv, NULL);
+
 		if (IS_ERR(btf)) {
 			err = PTR_ERR(btf);
 			btf = NULL;
