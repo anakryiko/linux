@@ -3597,11 +3597,17 @@ static int bpf_object__validate(struct bpf_object *obj, bool needs_kver)
 	return 0;
 }
 
+static int
+bpf_program__identify_section(struct bpf_program *prog,
+			      enum bpf_prog_type *prog_type,
+			      enum bpf_attach_type *expected_attach_type);
+
 static struct bpf_object *
 __bpf_object__open(const char *path, void *obj_buf, size_t obj_buf_sz,
 		   bool needs_kver, int flags)
 {
 	struct bpf_object *obj;
+	struct bpf_program *prog;
 	int err;
 
 	if (elf_version(EV_CURRENT) == EV_NONE) {
@@ -3621,6 +3627,26 @@ __bpf_object__open(const char *path, void *obj_buf, size_t obj_buf_sz,
 	CHECK_ERR(bpf_object__validate(obj, needs_kver), err, out);
 
 	bpf_object__elf_finish(obj);
+
+	bpf_object__for_each_program(prog, obj) {
+		enum bpf_attach_type attach_type;
+		enum bpf_prog_type prog_type;
+
+		/*
+		 * If type is not specified, try to guess it based on
+		 * section name.
+		 */
+		err = bpf_program__identify_section(prog, &prog_type,
+						    &attach_type);
+		if (err < 0) {
+			pr_warning("failed to guess program type/attach type for program '%s': %d\n", bpf_program__title(prog, false), err);
+			continue;
+		}
+
+		bpf_program__set_type(prog, prog_type);
+		bpf_program__set_expected_attach_type(prog, attach_type);
+	}
+
 	return obj;
 out:
 	bpf_object__close(obj);
