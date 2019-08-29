@@ -10,6 +10,7 @@
 #include <bpf.h>
 #include "bpf_core.h"
 #include "runqslower.h"
+#include "runqslower.embed.h"
 
 struct env {
 	pid_t pid;
@@ -116,15 +117,6 @@ void handle_lost_events(void *ctx, int cpu, __u64 lost_cnt)
 	printf("Lost %llu events on CPU #%d!\n", lost_cnt, cpu);
 }
 
-struct prog_def {
-	const char *name;
-	const char *tp_name;
-	struct bpf_program *prog;
-	struct bpf_link *link;
-};
-
-BPF_EMBED_OBJ(runqslower_bpf, ".output/runqslower.bpf.o");
-
 int main(int argc, char **argv)
 {
 	static const struct argp argp = {
@@ -132,21 +124,10 @@ int main(int argc, char **argv)
 		.parser = parse_arg,
 		.doc = argp_program_doc,
 	};
-	const char *RAW_TP_PREFIX = "raw_tracepoint/";
-	/* TODO: libbpf should auto-guess program type and allow auto-attach */
-	struct prog_def progs[] = {
-		{ .name = "raw_tracepoint/sched_wakeup" },
-		{ .name = "raw_tracepoint/sched_wakeup_new" },
-		{ .name = "raw_tracepoint/sched_switch" },
-	};
-	size_t prog_cnt = sizeof(progs)/sizeof(progs[0]);
-	struct prog_def *p;
-	struct bpf_object *obj = NULL;
-	struct bpf_map *events_map, *opts_map;
 	struct perf_buffer_opts pb_opts;
 	struct perf_buffer *pb = NULL;
 	struct opts opts;
-	int err, i, zero = 0;
+	int err, zero = 0;
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
@@ -160,67 +141,25 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	obj = bpf_object__open_buffer(runqslower_bpf_data, runqslower_bpf_size,
-				      "runqslower");
-	err = libbpf_get_error(obj);
+	err = bpf_object_def__load(runqslower_bpf.def, NULL);
 	if (err) {
 		fprintf(stderr, "failed to open BPF object: %d\n", err);
 		return 1;
 	}
 
-	for (i = 0; i < prog_cnt; i++) {
-		p = &progs[i];
-		if (!strstr(p->name, RAW_TP_PREFIX)) {
-			err = 1;
-			fprintf(stderr, "unexpected BPF program name: %s\n",
-				p->name);
-			goto cleanup;
-		}
-		p->tp_name = p->name + strlen(RAW_TP_PREFIX);
-		p->prog = bpf_object__find_program_by_title(obj, p->name);
-		bpf_program__set_raw_tracepoint(p->prog);
-	}
-
-	events_map = bpf_object__find_map_by_name(obj, "events");
-	if (!events_map) {
-		err = 1;
-		fprintf(stderr, "failed to find 'events' perf buffer map\n");
-		goto cleanup;
-	}
-
-	opts_map = bpf_object__find_map_by_name(obj, "runqslow.bss");
-	if (!opts_map) {
-		err = 1;
-		fprintf(stderr, "failed to find global data map\n");
-		goto cleanup;
-	}
-
-	err = bpf_object__load(obj);
-	if (err) {
-		fprintf(stderr, "failed to load BPF object: %d\n", err);
-		goto cleanup;
-	}
-
 	/* initialize global data (filtering options) */
 	opts.pid = env.pid;
 	opts.min_us = env.min_us;
-	err = bpf_map_update_elem(bpf_map__fd(opts_map), &zero, &opts, 0);
+	err = bpf_map_update_elem(bpf_map__fd(runqslower_bpf.map.bss), &zero, &opts, 0);
 	if (err) {
-		fprintf(stderr, "failed to initialize BPF program optionsd\n");
+		fprintf(stderr, "failed to initialize BPF program options\n");
 		goto cleanup;
 	}
 
-	for (i = 0; i < prog_cnt; i++) {
-		p = &progs[i];
-		p->link = bpf_program__attach_raw_tracepoint(p->prog,
-							     p->tp_name);
-		err = libbpf_get_error(p->link);
-		if (err) {
-			p->link = NULL;
-			fprintf(stderr, "failed to attach %s program: %d\n",
-				p->tp_name, err);
-			goto cleanup;
-		}
+	err = bpf_object_def__attach(runqslower_bpf.def, NULL);
+	if (err) {
+		fprintf(stderr, "failed to attach BPF programs\n");
+		goto cleanup;
 	}
 
 	printf("Tracing run queue latency higher than %llu us\n", env.min_us);
@@ -228,7 +167,7 @@ int main(int argc, char **argv)
 
 	pb_opts.sample_cb = handle_event;
 	pb_opts.lost_cb = handle_lost_events;
-	pb = perf_buffer__new(bpf_map__fd(events_map), 64, &pb_opts);
+	pb = perf_buffer__new(bpf_map__fd(runqslower_bpf.map.events), 64, &pb_opts);
 	err = libbpf_get_error(pb);
 	if (err) {
 		pb = NULL;
@@ -242,9 +181,7 @@ int main(int argc, char **argv)
 
 cleanup:
 	perf_buffer__free(pb);
-	for (i = 0; i < prog_cnt; i++)
-		bpf_link__destroy(progs[i].link);
-	bpf_object__close(obj);
+	bpf_object_def__destroy(runqslower_bpf.def);
 
 	return err != 0;
 }

@@ -18,10 +18,12 @@ all: runqslower
 clean:
 	rm -rf $(out) runqslower
 
-runqslower: $(out)/runqslower.o $(out)/libbpf.a
+runqslower: $(out)/runqslower.o $(out)/libbpf.a $(out)/runqslower.embed.o
 	$(CC) $(CFLAGS) -lelf $^ -o $@
 
-$(out)/runqslower.o: $(out)/runqslower.bpf.o bpf_core.h runqslower.h
+$(out)/runqslower.o: $(out)/runqslower.bpf.o bpf_core.h runqslower.h $(out)/runqslower.embed.o runqslower.embed.h
+
+$(out)/runqslower.embed.o: $(out)/runqslower.bpf.o bpf_core.h runqslower.embed.h
 
 $(out)/runqslower.bpf.o: $(out)/vmlinux.h runqslower.h bpf_lib.h
 
