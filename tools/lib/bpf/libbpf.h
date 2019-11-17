@@ -103,14 +103,18 @@ struct bpf_object_open_opts {
 	bool relaxed_maps;
 	/* process CO-RE relocations non-strictly, allowing them to fail */
 	bool relaxed_core_relocs;
+	__u32 attach_prog_fd;
 	/* maps that set the 'pinning' attribute in their definition will have
 	 * their pin_path attribute set to a file in this directory, and be
 	 * auto-pinned to that path on load; defaults to "/sys/fs/bpf".
 	 */
 	const char *pin_root_path;
-	__u32 attach_prog_fd;
+	/* kernel config file path override (for CONFIG_ externs); can point
+	 * to either uncompressed text file or .gz file
+	 */
+	const char *kconfig_path;
 };
-#define bpf_object_open_opts__last_field attach_prog_fd
+#define bpf_object_open_opts__last_field kconfig_path
 
 LIBBPF_API struct bpf_object *bpf_object__open(const char *path);
 LIBBPF_API struct bpf_object *

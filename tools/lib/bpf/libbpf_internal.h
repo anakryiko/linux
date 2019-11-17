@@ -277,4 +277,10 @@ int bpf_object__attach_skeleton(struct bpf_object_skeleton *s,
 void bpf_object__detach_skeleton(struct bpf_object_skeleton *s);
 void bpf_object__destroy_skeleton(struct bpf_object_skeleton *s);
 
+enum libbpf_tristate {
+	TRI_NO = 0,
+	TRI_YES = 1,
+	TRI_MODULE = 2,
+};
+
 #endif /* __LIBBPF_LIBBPF_INTERNAL_H */
