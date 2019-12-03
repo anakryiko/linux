@@ -237,4 +237,42 @@ struct bpf_field_reloc {
 	enum bpf_field_info_kind kind;
 };
 
+
+struct bpf_map_skeleton {
+	const char *name;
+	struct bpf_map **map;
+	void **mmaped;
+};
+
+struct bpf_prog_skeleton {
+	const char *name;
+	struct bpf_program **prog;
+	struct bpf_link **link;
+};
+
+struct bpf_object_skeleton {
+	size_t sz; /* size of this struct, for forward/backward compatibility */
+
+	const char *name;
+	void *data;
+	size_t data_sz;
+
+	struct bpf_object **obj;
+
+	int map_cnt;
+	int map_skel_sz; /* sizeof(struct bpf_skeleton_map) */
+	struct bpf_map_skeleton *maps;
+
+	int prog_cnt;
+	int prog_skel_sz; /* sizeof(struct bpf_skeleton_prog) */
+	struct bpf_prog_skeleton *progs;
+};
+
+int bpf_object__open_skeleton(struct bpf_object_skeleton *s,
+			      const struct bpf_object_open_opts *opts);
+int bpf_object__load_skeleton(struct bpf_object_skeleton *s);
+int bpf_object__attach_skeleton(struct bpf_object_skeleton *s);
+void bpf_object__detach_skeleton(struct bpf_object_skeleton *s);
+void bpf_object__destroy_skeleton(struct bpf_object_skeleton *s);
+
 #endif /* __LIBBPF_LIBBPF_INTERNAL_H */
