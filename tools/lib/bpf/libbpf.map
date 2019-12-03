@@ -203,7 +203,6 @@ LIBBPF_0.0.6 {
 		bpf_program__get_expected_attach_type;
 		bpf_program__get_type;
 		bpf_program__is_tracing;
-		bpf_program__name;
 		bpf_program__set_tracing;
 		bpf_program__size;
 		btf__find_by_name_kind;
