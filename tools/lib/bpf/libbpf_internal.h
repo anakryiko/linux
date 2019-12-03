@@ -98,6 +98,12 @@ static inline bool libbpf_validate_opts(const char *opts,
 int libbpf__load_raw_btf(const char *raw_types, size_t types_len,
 			 const char *str_sec, size_t str_len);
 
+struct btf_dump;
+
+void btf_dump_emit_type_decl(struct btf_dump *d, __u32 id, const char *fname,
+			     int lvl);
+int btf_align_of(const struct btf *btf, __u32 id);
+
 int bpf_object__section_size(const struct bpf_object *obj, const char *name,
 			     __u32 *size);
 int bpf_object__variable_offset(const struct bpf_object *obj, const char *name,
