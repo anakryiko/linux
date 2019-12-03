@@ -227,6 +227,7 @@ static const struct cmd cmds[] = {
 	{ "net",	do_net },
 	{ "feature",	do_feature },
 	{ "btf",	do_btf },
+	{ "gen",	do_gen },
 	{ "version",	do_version },
 	{ 0 }
 };
