@@ -16,7 +16,6 @@ long long in4 __attribute__((aligned(64))) = 0;
 struct s in5 = {};
 
 long long out2 = 0;
-struct s out5 = {};
 char out3 = 0;
 long long out4 = 0;
 int out1 = 0;
@@ -25,6 +24,8 @@ int out1 = 0;
 SEC("raw_tp/sys_enter")
 int handler(const void *ctx)
 {
+	static volatile struct s out5;
+
 	out1 = in1;
 	out2 = in2;
 	out3 = in3;
