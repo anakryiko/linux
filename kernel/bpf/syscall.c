@@ -2198,6 +2198,16 @@ void bpf_link_inc(struct bpf_link *link)
 	atomic64_inc(&link->refcnt);
 }
 
+/* swap inner BPF program, return previous one, no refcounting is performed */
+struct bpf_prog *bpf_link_swap_prog(struct bpf_link *link,
+				    struct bpf_prog *prog)
+{
+	struct bpf_prog *old = link->prog;
+
+	link->prog = prog;
+	return old;
+}
+
 /* bpf_link_free is guaranteed to be called from process context */
 static void bpf_link_free(struct bpf_link *link)
 {
