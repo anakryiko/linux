@@ -7478,6 +7478,40 @@ static struct bpf_link *attach_trace(const struct bpf_sec_def *sec,
 	return bpf_program__attach_trace(prog);
 }
 
+struct bpf_link *bpf_program__attach_cgroup(struct bpf_program *prog,
+					    int cgroup_fd)
+{
+	enum bpf_attach_type attach_type;
+	char errmsg[STRERR_BUFSIZE];
+	struct bpf_link *link;
+	int prog_fd, link_fd;
+
+	prog_fd = bpf_program__fd(prog);
+	if (prog_fd < 0) {
+		pr_warn("program '%s': can't attach before loaded\n",
+			bpf_program__title(prog, false));
+		return ERR_PTR(-EINVAL);
+	}
+
+	link = calloc(1, sizeof(*link));
+	if (!link)
+		return ERR_PTR(-ENOMEM);
+	link->detach = &bpf_link__detach_fd;
+
+	attach_type = bpf_program__get_expected_attach_type(prog);
+	link_fd = bpf_link_create(prog_fd, cgroup_fd, attach_type, NULL);
+	if (link_fd < 0) {
+		link_fd = -errno;
+		free(link);
+		pr_warn("program '%s': failed to attach to cgroup: %s\n",
+			bpf_program__title(prog, false),
+			libbpf_strerror_r(link_fd, errmsg, sizeof(errmsg)));
+		return ERR_PTR(link_fd);
+	}
+	link->fd = link_fd;
+	return link;
+}
+
 struct bpf_link *bpf_program__attach(struct bpf_program *prog)
 {
 	const struct bpf_sec_def *sec_def;

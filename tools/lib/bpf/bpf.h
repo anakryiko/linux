@@ -168,6 +168,15 @@ LIBBPF_API int bpf_prog_detach(int attachable_fd, enum bpf_attach_type type);
 LIBBPF_API int bpf_prog_detach2(int prog_fd, int attachable_fd,
 				enum bpf_attach_type type);
 
+struct bpf_link_create_opts {
+	size_t sz; /* size of this struct for forward/backward compatibility */
+};
+#define bpf_link_create_opts__last_field sz
+
+LIBBPF_API int bpf_link_create(int prog_fd, int target_fd,
+			       enum bpf_attach_type attach_type,
+			       const struct bpf_link_create_opts *opts);
+
 struct bpf_prog_test_run_attr {
 	int prog_fd;
 	int repeat;

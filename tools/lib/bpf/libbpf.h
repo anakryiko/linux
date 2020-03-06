@@ -245,11 +245,15 @@ bpf_program__attach_tracepoint(struct bpf_program *prog,
 LIBBPF_API struct bpf_link *
 bpf_program__attach_raw_tracepoint(struct bpf_program *prog,
 				   const char *tp_name);
-
 LIBBPF_API struct bpf_link *
 bpf_program__attach_trace(struct bpf_program *prog);
+LIBBPF_API struct bpf_link *
+bpf_program__attach_cgroup(struct bpf_program *prog, int cgroup_fd);
+
 struct bpf_map;
+
 LIBBPF_API struct bpf_link *bpf_map__attach_struct_ops(struct bpf_map *map);
+
 struct bpf_insn;
 
 /*
