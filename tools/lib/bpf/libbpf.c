@@ -6207,14 +6207,14 @@ void bpf_program__set_expected_attach_type(struct bpf_program *prog,
 }
 
 #define BPF_PROG_SEC_IMPL(string, ptype, eatype, is_attachable, btf, atype) \
-	{ string, sizeof(string) - 1, ptype, eatype, is_attachable, btf, atype }
+	{ string, sizeof(string) - 1, ptype, eatype, is_attachable, btf/*, atype*/ }
 
 /* Programs that can NOT be attached. */
 #define BPF_PROG_SEC(string, ptype) BPF_PROG_SEC_IMPL(string, ptype, 0, 0, 0, 0)
 
 /* Programs that can be attached. */
 #define BPF_APROG_SEC(string, ptype, atype) \
-	BPF_PROG_SEC_IMPL(string, ptype, 0, 1, 0, atype)
+	BPF_PROG_SEC_IMPL(string, ptype, atype, 1, 0, atype)
 
 /* Programs that must specify expected attach type at load time. */
 #define BPF_EAPROG_SEC(string, ptype, eatype) \
@@ -6257,7 +6257,7 @@ struct bpf_sec_def {
 	enum bpf_attach_type expected_attach_type;
 	bool is_attachable;
 	bool is_attach_btf;
-	enum bpf_attach_type attach_type;
+	//enum bpf_attach_type attach_type;
 	attach_fn_t attach_fn;
 };
 
@@ -6686,7 +6686,7 @@ int libbpf_attach_type_by_name(const char *name,
 			continue;
 		if (!section_defs[i].is_attachable)
 			return -EINVAL;
-		*attach_type = section_defs[i].attach_type;
+		*attach_type = section_defs[i].expected_attach_type;
 		return 0;
 	}
 	pr_debug("failed to guess attach type based on ELF section name '%s'\n", name);
