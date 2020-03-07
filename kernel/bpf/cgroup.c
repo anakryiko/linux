@@ -25,6 +25,7 @@ EXPORT_SYMBOL(cgroup_bpf_enabled_key);
 void cgroup_bpf_offline(struct cgroup *cgrp)
 {
 	cgroup_get(cgrp);
+	printk("CG BPF OFFLNE cgrp=%lx\n", (long)cgrp);
 	percpu_ref_kill(&cgrp->bpf.refcnt);
 }
 
@@ -94,6 +95,8 @@ static void cgroup_bpf_release(struct work_struct *work)
 
 	mutex_lock(&cgroup_mutex);
 
+	printk("CG BPF RELEASE cgrp=%lx\n", (long)cgrp);
+
 	for (type = 0; type < ARRAY_SIZE(cgrp->bpf.progs); type++) {
 		struct list_head *progs = &cgrp->bpf.progs[type];
 		struct bpf_prog_list *pl, *tmp;
@@ -104,6 +107,7 @@ static void cgroup_bpf_release(struct work_struct *work)
 				bpf_prog_put(pl->prog);
 			bpf_cgroup_storages_unlink(pl->storage);
 			bpf_cgroup_storages_free(pl->storage);
+			printk("CG RELEASE FREEING PL %lx\n", (long)pl);
 			kfree(pl);
 			static_branch_dec(&cgroup_bpf_enabled_key);
 		}
@@ -448,6 +452,7 @@ int __cgroup_bpf_attach(struct cgroup *cgrp,
 		return -ENOMEM;
 
 	if (pl) {
+		printk("REUSE PROG ENTRY cgrp: %lx, pl: %lx, prog: %lx, link: %lx (prog=%lx), repl_prog: %lx, flags: %x, type: %d\n", (long)cgrp, (long)pl, (long)prog, (long)link, (long)(link ? link->link.prog : NULL), (long)replace_prog, flags, type);
 		/* only non-link case is possible */
 		old_prog = pl->prog;
 		bpf_cgroup_storages_unlink(pl->storage);
@@ -459,6 +464,7 @@ int __cgroup_bpf_attach(struct cgroup *cgrp,
 			return -ENOMEM;
 		}
 		list_add_tail(&pl->node, progs);
+		printk("ADDED PROG ENTRY cgrp: %lx, pl: %lx, prog: %lx, link: %lx (prog=%lx), repl_prog: %lx, flags: %x, type: %d\n", (long)cgrp, (long)pl, (long)prog, (long)link, (long)(link ? link->link.prog : NULL), (long)replace_prog, flags, type);
 	}
 
 	pl->prog = prog;
@@ -486,6 +492,7 @@ cleanup:
 	bpf_cgroup_storages_link(pl->storage, cgrp, type);
 	if (!old_prog) {
 		list_del(&pl->node);
+		printk("FREEING PL %lx\n", (long)pl);
 		kfree(pl);
 	}
 	return err;
@@ -551,6 +558,8 @@ int __cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
 	if (IS_ERR(pl))
 		return PTR_ERR(pl);
 
+	printk("DELETE PROG ENTRY cgrp: %lx, pl: %lx, prog: %lx, link: %lx, flags: %x, type: %d\n", (long)cgrp, (long)pl, (long)prog, (long)link, flags, type);
+
 	/* mark it deleted, so it's ignored while recomputing effective */
 	old_prog = pl->prog;
 	pl->prog = NULL;
@@ -564,6 +573,7 @@ int __cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
 	list_del(&pl->node);
 	bpf_cgroup_storages_unlink(pl->storage);
 	bpf_cgroup_storages_free(pl->storage);
+	printk("DETACH FREEING PL %lx\n", (long)pl);
 	kfree(pl);
 	if (list_empty(progs))
 		/* last program was detached, reset flags to zero */
@@ -699,6 +709,7 @@ static void bpf_cgroup_link_dealloc(struct bpf_link *link)
 	struct bpf_cgroup_link *cg_link =
 		container_of(link, struct bpf_cgroup_link, link);
 
+	printk("FREEING CGLINK %lx\n", (long)cg_link);
 	kfree(cg_link);
 }
 
@@ -733,6 +744,8 @@ int cgroup_bpf_link_attach(const union bpf_attr *attr, struct bpf_prog *prog)
 		err = PTR_ERR(link_file);
 		goto out_put_cgroup;
 	}
+
+	printk("ALLOC CGLINK %lx, FILE %lx\n", (long)link, (long)link_file);
 
 	err = cgroup_bpf_attach(cgrp, NULL, NULL, link, link->type,
 				BPF_F_ALLOW_MULTI);

@@ -112,6 +112,8 @@ struct bpf_prog *bpf_prog_alloc(unsigned int size, gfp_t gfp_extra_flags)
 	if (!prog)
 		return NULL;
 
+	printk("BPF_PROG_ALLOC %lx\n", (long)prog);
+
 	prog->aux->stats = alloc_percpu_gfp(struct bpf_prog_stats, gfp_flags);
 	if (!prog->aux->stats) {
 		kfree(prog->aux);

@@ -1690,6 +1690,7 @@ static void __bpf_prog_put_rcu(struct rcu_head *rcu)
 	kfree(aux->func_info_aux);
 	bpf_prog_uncharge_memlock(aux->prog);
 	security_bpf_prog_free(aux);
+	printk("BPF_PROG_FREE prog=%lx, refcnt=%lld\n", (long)aux->prog, atomic64_read(&aux->refcnt));
 	bpf_prog_free(aux->prog);
 }
 
@@ -1712,7 +1713,10 @@ static void __bpf_prog_put(struct bpf_prog *prog, bool do_idr_lock)
 		bpf_audit_prog(prog, BPF_AUDIT_UNLOAD);
 		/* bpf_prog_free_id() must be called first */
 		bpf_prog_free_id(prog, do_idr_lock);
+		printk("BPF_PROG_PUT FINAL prog=%lx, refcnt=%lld\n", (long)prog, atomic64_read(&prog->aux->refcnt));
 		__bpf_prog_put_noref(prog, true);
+	} else {
+		printk("BPF_PROG_PUT prog=%lx, refcnt=%lld\n", (long)prog, atomic64_read(&prog->aux->refcnt));
 	}
 }
 
@@ -1834,6 +1838,7 @@ EXPORT_SYMBOL_GPL(bpf_prog_sub);
 void bpf_prog_inc(struct bpf_prog *prog)
 {
 	atomic64_inc(&prog->aux->refcnt);
+	printk("PROG INC prog=%lx refcnt=%lld\n", (long)prog, atomic64_read(&prog->aux->refcnt));
 }
 EXPORT_SYMBOL_GPL(bpf_prog_inc);
 
@@ -2240,6 +2245,7 @@ static int bpf_link_release(struct inode *inode, struct file *filp)
 {
 	struct bpf_link *link = filp->private_data;
 
+	printk("RELEASE FILE %lx\n", (long)filp);
 	bpf_link_put(link);
 	return 0;
 }
