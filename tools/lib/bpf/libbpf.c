@@ -9150,12 +9150,16 @@ static int determine_uprobe_retprobe_bit(void)
 	return parse_uint_from_file(file, "config:%d\n");
 }
 
+#define PERF_UPROBE_REF_CTR_OFFSET_SHIFT 32
+
 static int perf_event_open_probe(bool uprobe, bool retprobe, const char *name,
-				 uint64_t offset, int pid)
+				 uint64_t offset, int pid, uint32_t ref_cnt_offset)
 {
-	struct perf_event_attr attr = {};
+	struct perf_event_attr attr;
 	char errmsg[STRERR_BUFSIZE];
 	int type, pfd, err;
+
+	memset(&attr, 0, sizeof(attr));
 
 	type = uprobe ? determine_uprobe_perf_type()
 		      : determine_kprobe_perf_type();
@@ -9165,6 +9169,7 @@ static int perf_event_open_probe(bool uprobe, bool retprobe, const char *name,
 			libbpf_strerror_r(type, errmsg, sizeof(errmsg)));
 		return type;
 	}
+	attr.config = (__u64)ref_cnt_offset << PERF_UPROBE_REF_CTR_OFFSET_SHIFT;
 	if (retprobe) {
 		int bit = uprobe ? determine_uprobe_retprobe_bit()
 				 : determine_kprobe_retprobe_bit();
@@ -9217,7 +9222,7 @@ bpf_program__attach_kprobe_opts(struct bpf_program *prog,
 	pe_opts.bpf_cookie = OPTS_GET(opts, bpf_cookie, 0);
 
 	pfd = perf_event_open_probe(false /* uprobe */, retprobe, func_name,
-				    offset, -1 /* pid */);
+				    offset, -1 /* pid */, 0);
 	if (pfd < 0) {
 		pr_warn("prog '%s': failed to create %s '%s' perf event: %s\n",
 			prog->name, retprobe ? "kretprobe" : "kprobe", func_name,
@@ -9289,15 +9294,17 @@ bpf_program__attach_uprobe_opts(struct bpf_program *prog, pid_t pid,
 	struct bpf_link *link;
 	int pfd, err;
 	bool retprobe;
+	size_t refcnt_off;
 
 	if (!OPTS_VALID(opts, bpf_uprobe_opts))
 		return libbpf_err_ptr(-EINVAL);
 
 	retprobe = OPTS_GET(opts, retprobe, false);
 	pe_opts.bpf_cookie = OPTS_GET(opts, bpf_cookie, 0);
+	refcnt_off = OPTS_GET(opts, refcnt_offset, 0);
 
 	pfd = perf_event_open_probe(true /* uprobe */, retprobe,
-				    binary_path, func_offset, pid);
+				    binary_path, func_offset, pid, refcnt_off);
 	if (pfd < 0) {
 		pr_warn("prog '%s': failed to create %s '%s:0x%zx' perf event: %s\n",
 			prog->name, retprobe ? "uretprobe" : "uprobe",
