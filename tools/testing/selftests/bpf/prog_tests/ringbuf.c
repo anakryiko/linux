@@ -32,6 +32,7 @@ static int process_sample(void *ctx, void *data, size_t len)
 	struct sample *s = data;
 
 	sample_cnt++;
+	printf("GOT sample #%d\n", sample_cnt);
 
 	switch (s->seq) {
 	case 0:
