@@ -179,8 +179,9 @@ void test_ringbuf(void)
 		goto cleanup;
 
 	/* now force notifications */
-	skel->bss->flags = BPF_RB_FORCE_WAKEUP;
 	sample_cnt = 0;
+	smp_mb();
+	skel->bss->flags = BPF_RB_FORCE_WAKEUP;
 	trigger_samples();
 
 	/* now we should get a pending notification */
@@ -192,6 +193,7 @@ void test_ringbuf(void)
 	if (CHECK(bg_ret != 1, "bg_ret", "epoll_wait result: %ld", bg_ret))
 		goto cleanup;
 
+	smp_mb();
 	/* 3 rounds, 2 samples each */
 	CHECK(sample_cnt != 6, "wrong_sample_cnt",
 	      "expected to see %d samples, got %d\n", 6, sample_cnt);
