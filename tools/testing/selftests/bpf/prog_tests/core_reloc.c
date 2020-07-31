@@ -177,14 +177,13 @@
 	.fails = true,							\
 }
 
-#define EXISTENCE_CASE_COMMON(name)					\
+#define FIELD_EXISTS_CASE_COMMON(name)					\
 	.case_name = #name,						\
 	.bpf_obj_file = "test_core_reloc_existence.o",			\
-	.btf_src_file = "btf__core_reloc_" #name ".o",			\
-	.relaxed_core_relocs = true
+	.btf_src_file = "btf__core_reloc_" #name ".o"			\
 
-#define EXISTENCE_ERR_CASE(name) {					\
-	EXISTENCE_CASE_COMMON(name),					\
+#define FIELD_EXISTS_ERR_CASE(name) {					\
+	FIELD_EXISTS_CASE_COMMON(name),					\
 	.fails = true,							\
 }
 
@@ -250,6 +249,23 @@
 
 #define SIZE_ERR_CASE(name) {						\
 	SIZE_CASE_COMMON(name),						\
+	.fails = true,							\
+}
+
+#define TYPE_BASED_CASE_COMMON(name)					\
+	.case_name = #name,						\
+	.bpf_obj_file = "test_core_reloc_type_based.o",		\
+	.btf_src_file = "btf__core_reloc_" #name ".o"			\
+
+#define TYPE_BASED_CASE(name, ...) {					\
+	TYPE_BASED_CASE_COMMON(name),					\
+	.output = STRUCT_TO_CHAR_PTR(core_reloc_type_based_output)	\
+			__VA_ARGS__,					\
+	.output_len = sizeof(struct core_reloc_type_based_output),	\
+}
+
+#define TYPE_BASED_ERR_CASE(name) {					\
+	TYPE_BASED_CASE_COMMON(name),					\
 	.fails = true,							\
 }
 
@@ -364,7 +380,7 @@ static struct core_reloc_test_case test_cases[] = {
 
 	/* validate field existence checks */
 	{
-		EXISTENCE_CASE_COMMON(existence),
+		FIELD_EXISTS_CASE_COMMON(existence),
 		.input = STRUCT_TO_CHAR_PTR(core_reloc_existence) {
 			.a = 1,
 			.b = 2,
@@ -388,7 +404,7 @@ static struct core_reloc_test_case test_cases[] = {
 		.output_len = sizeof(struct core_reloc_existence_output),
 	},
 	{
-		EXISTENCE_CASE_COMMON(existence___minimal),
+		FIELD_EXISTS_CASE_COMMON(existence___minimal),
 		.input = STRUCT_TO_CHAR_PTR(core_reloc_existence___minimal) {
 			.a = 42,
 		},
@@ -408,12 +424,12 @@ static struct core_reloc_test_case test_cases[] = {
 		.output_len = sizeof(struct core_reloc_existence_output),
 	},
 
-	EXISTENCE_ERR_CASE(existence__err_int_sz),
-	EXISTENCE_ERR_CASE(existence__err_int_type),
-	EXISTENCE_ERR_CASE(existence__err_int_kind),
-	EXISTENCE_ERR_CASE(existence__err_arr_kind),
-	EXISTENCE_ERR_CASE(existence__err_arr_value_type),
-	EXISTENCE_ERR_CASE(existence__err_struct_type),
+	FIELD_EXISTS_ERR_CASE(existence__err_int_sz),
+	FIELD_EXISTS_ERR_CASE(existence__err_int_type),
+	FIELD_EXISTS_ERR_CASE(existence__err_int_kind),
+	FIELD_EXISTS_ERR_CASE(existence__err_arr_kind),
+	FIELD_EXISTS_ERR_CASE(existence__err_arr_value_type),
+	FIELD_EXISTS_ERR_CASE(existence__err_struct_type),
 
 	/* bitfield relocation checks */
 	BITFIELDS_CASE(bitfields, {
@@ -453,6 +469,67 @@ static struct core_reloc_test_case test_cases[] = {
 	SIZE_CASE(size),
 	SIZE_CASE(size___diff_sz),
 	SIZE_ERR_CASE(size___err_ambiguous),
+
+	/* validate type existence and size relocations */
+	TYPE_BASED_CASE(type_based, {
+		.struct_exists = 1,
+		.union_exists = 1,
+		.enum_exists = 1,
+		.typedef_named_struct_exists = 1,
+		.typedef_anon_struct_exists = 1,
+		.typedef_struct_ptr_exists = 1,
+		.typedef_int_exists = 1,
+		.typedef_enum_exists = 1,
+		.typedef_void_ptr_exists = 1,
+		.typedef_func_proto_exists = 1,
+		.typedef_arr_exists = 1,
+		.struct_sz = sizeof(struct a_struct),
+		.union_sz = sizeof(union a_union),
+		.enum_sz = sizeof(enum an_enum),
+		.typedef_named_struct_sz = sizeof(named_struct_typedef),
+		.typedef_anon_struct_sz = sizeof(anon_struct_typedef),
+		.typedef_struct_ptr_sz = sizeof(struct_ptr_typedef),
+		.typedef_int_sz = sizeof(int_typedef),
+		.typedef_enum_sz = sizeof(enum_typedef),
+		.typedef_void_ptr_sz = sizeof(void_ptr_typedef),
+		.typedef_func_proto_sz = sizeof(func_proto_typedef),
+		.typedef_arr_sz = sizeof(arr_typedef),
+	}),
+	TYPE_BASED_CASE(type_based___all_missing, {
+		/* all zeros */
+	}),
+	TYPE_BASED_CASE(type_based___diff_sz, {
+		.struct_exists = 1,
+		.union_exists = 1,
+		.enum_exists = 1,
+		.typedef_named_struct_exists = 1,
+		.typedef_anon_struct_exists = 1,
+		.typedef_struct_ptr_exists = 1,
+		.typedef_int_exists = 1,
+		.typedef_enum_exists = 1,
+		.typedef_void_ptr_exists = 1,
+		.typedef_func_proto_exists = 1,
+		.typedef_arr_exists = 1,
+		.struct_sz = sizeof(struct a_struct___diff_sz),
+		.union_sz = sizeof(union a_union___diff_sz),
+		.enum_sz = sizeof(enum an_enum___diff_sz),
+		.typedef_named_struct_sz = sizeof(named_struct_typedef___diff_sz),
+		.typedef_anon_struct_sz = sizeof(anon_struct_typedef___diff_sz),
+		.typedef_struct_ptr_sz = sizeof(struct_ptr_typedef___diff_sz),
+		.typedef_int_sz = sizeof(int_typedef___diff_sz),
+		.typedef_enum_sz = sizeof(enum_typedef___diff_sz),
+		.typedef_void_ptr_sz = sizeof(void_ptr_typedef___diff_sz),
+		.typedef_func_proto_sz = sizeof(func_proto_typedef___diff_sz),
+		.typedef_arr_sz = sizeof(arr_typedef___diff_sz),
+	}),
+	TYPE_BASED_CASE(type_based___incompat, {
+		.enum_exists = 1,
+		.enum_sz = sizeof(enum an_enum),
+	}),
+	TYPE_BASED_CASE(type_based___fn_wrong_args, {
+		.struct_exists = 1,
+		.struct_sz = sizeof(struct a_struct),
+	}),
 };
 
 struct data {
