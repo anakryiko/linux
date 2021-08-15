@@ -3,6 +3,7 @@
  * Copyright (c) 2016 Facebook
  */
 
+#include "linux/bpf.h"
 #include <linux/bpf.h>
 
 #include "disasm.h"
@@ -10,6 +11,7 @@
 #define __BPF_FUNC_STR_FN(x) [BPF_FUNC_ ## x] = __stringify(bpf_ ## x)
 static const char * const func_id_str[] = {
 	__BPF_FUNC_MAPPER(__BPF_FUNC_STR_FN)
+	[BPF_FUNC_get_attach_cookie] = "bpf_get_attach_cookie",
 };
 #undef __BPF_FUNC_STR_FN
 

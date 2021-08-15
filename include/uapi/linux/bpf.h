@@ -3754,6 +3754,21 @@ union bpf_attr {
  * 	Return
  * 		The helper returns **TC_ACT_REDIRECT** on success or
  * 		**TC_ACT_SHOT** on error.
+ *
+ * u64 bpf_get_attach_cookie(void *ctx)
+ * 	Description
+ * 		Get bpf_cookie value provided (optionally) during the program
+ * 		attachment. It might be different for each individual
+ * 		attachment, even if BPF program itself is the same.
+ * 		Expects BPF program context *ctx* as a first argument.
+ *
+ * 		Supported for the following program types:
+ *			- kprobe/uprobe;
+ *			- tracepoint;
+ *			- perf_event.
+ * 	Return
+ *		Value specified by user at BPF link creation/attachment time
+ *		or 0, if it was not specified.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -3920,6 +3935,7 @@ union bpf_attr {
 #define __BPF_ENUM_FN(x) BPF_FUNC_ ## x
 enum bpf_func_id {
 	__BPF_FUNC_MAPPER(__BPF_ENUM_FN)
+	BPF_FUNC_get_attach_cookie = 174,
 	__BPF_FUNC_MAX_ID,
 };
 #undef __BPF_ENUM_FN
