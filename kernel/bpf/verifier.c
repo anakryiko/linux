@@ -7135,6 +7135,11 @@ static struct bpf_insn_aux_data *cur_aux(struct bpf_verifier_env *env)
 	return &env->insn_aux_data[env->insn_idx];
 }
 
+static struct bpf_insn_aux_data *insn_aux(struct bpf_verifier_env *env, int insn_idx)
+{
+	return &env->insn_aux_data[insn_idx];
+}
+
 static bool loop_flag_is_zero(struct bpf_verifier_env *env)
 {
 	struct bpf_reg_state *regs = cur_regs(env);
@@ -10047,8 +10052,8 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	struct bpf_reg_state *regs = this_branch->frame[this_branch->curframe]->regs;
 	struct bpf_reg_state *dst_reg, *other_branch_regs, *src_reg = NULL;
 	u8 opcode = BPF_OP(insn->code);
-	bool is_jmp32;
-	int pred = -1;
+	bool is_jmp32, swap_branches;
+	int pred = -1, b1, b2;
 	int err;
 
 	/* Only conditional jumps are expected to reach here. */
@@ -10146,11 +10151,27 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		return 0;
 	}
 
-	other_branch = push_stack(env, *insn_idx + insn->off + 1, *insn_idx,
-				  false);
-	if (!other_branch)
-		return -EFAULT;
+	b1 = *insn_idx + 1;
+	b2 = *insn_idx + insn->off + 1;
+	if (insn_aux(env, b1)->exit_dist <= insn_aux(env, b2)->exit_dist) {
+		other_branch = push_stack(env, *insn_idx + insn->off + 1, *insn_idx, false);
+		if (!other_branch)
+			return -EFAULT;
+		swap_branches = false;
+	} else {
+		other_branch = push_stack(env, *insn_idx + 1, *insn_idx, false);
+		if (!other_branch)
+			return -EFAULT;
+
+		*insn_idx += insn->off;
+
+		swap(this_branch, other_branch);
+		swap_branches = true;
+	}
+
+	regs = this_branch->frame[this_branch->curframe]->regs;
 	other_branch_regs = other_branch->frame[other_branch->curframe]->regs;
+	dst_reg = &regs[insn->dst_reg];
 
 	/* detect if we are comparing against a constant value so we can adjust
 	 * our min/max values for our dst register.
@@ -10226,8 +10247,11 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 			insn->dst_reg);
 		return -EACCES;
 	}
-	if (env->log.level & BPF_LOG_LEVEL)
+	if (env->log.level & BPF_LOG_LEVEL) {
+		if (swap_branches)
+			swap(this_branch, other_branch);
 		print_insn_state(env, this_branch->frame[this_branch->curframe]);
+	}
 	return 0;
 }
 
@@ -10655,6 +10679,20 @@ enum {
 	KEEP_EXPLORING = 1,
 };
 
+static void update_exit_dist(struct bpf_verifier_env *env, int t, int w)
+{
+	int dt, dw;
+
+	if (w < 0 || w >= env->prog->len)
+		return;
+
+	dt = env->insn_aux_data[t].exit_dist;
+	dw = env->insn_aux_data[w].exit_dist;
+
+	if (dt == 0 || dw + 1 < dt)
+		env->insn_aux_data[t].exit_dist = dw + 1;
+}
+
 /* t, w, e - match pseudo-code above:
  * t - index of current instruction
  * w - next instruction
@@ -10666,11 +10704,15 @@ static int push_insn(int t, int w, int e, struct bpf_verifier_env *env,
 	int *insn_stack = env->cfg.insn_stack;
 	int *insn_state = env->cfg.insn_state;
 
-	if (e == FALLTHROUGH && insn_state[t] >= (DISCOVERED | FALLTHROUGH))
+	if (e == FALLTHROUGH && insn_state[t] >= (DISCOVERED | FALLTHROUGH)) {
+		update_exit_dist(env, t, w);
 		return DONE_EXPLORING;
+	}
 
-	if (e == BRANCH && insn_state[t] >= (DISCOVERED | BRANCH))
+	if (e == BRANCH && insn_state[t] >= (DISCOVERED | BRANCH)) {
+		update_exit_dist(env, t, w);
 		return DONE_EXPLORING;
+	}
 
 	if (w < 0 || w >= env->prog->len) {
 		verbose_linfo(env, t, "%d: ", t);
@@ -10700,11 +10742,12 @@ static int push_insn(int t, int w, int e, struct bpf_verifier_env *env,
 	} else if (insn_state[w] == EXPLORED) {
 		/* forward- or cross-edge */
 		insn_state[t] = DISCOVERED | e;
+		update_exit_dist(env, t, w);
+		return DONE_EXPLORING;
 	} else {
 		verbose(env, "insn state internal bug\n");
 		return -EFAULT;
 	}
-	return DONE_EXPLORING;
 }
 
 static int visit_func_call_insn(int t, int insn_cnt,
@@ -10752,6 +10795,7 @@ static int visit_insn(int t, int insn_cnt, struct bpf_verifier_env *env)
 
 	switch (BPF_OP(insns[t].code)) {
 	case BPF_EXIT:
+		env->insn_aux_data[t].exit_dist = 1;
 		return DONE_EXPLORING;
 
 	case BPF_CALL:
@@ -10855,6 +10899,7 @@ static int check_cfg(struct bpf_verifier_env *env)
 			ret = -EINVAL;
 			goto err_free;
 		}
+
 	}
 	ret = 0; /* cfg looks good */
 
@@ -14565,6 +14610,7 @@ static int do_check_common(struct bpf_verifier_env *env, int subprog)
 	}
 
 	ret = do_check(env);
+
 out:
 	/* check for NULL is necessary, since cur_state can be freed inside
 	 * do_check() under memory pressure.
@@ -14576,6 +14622,7 @@ out:
 	while (!pop_stack(env, NULL, NULL, false));
 	if (!ret && pop_log)
 		bpf_vlog_reset(&env->log, 0);
+
 	free_states(env);
 	return ret;
 }
@@ -15198,6 +15245,10 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr)
 
 	ret = do_check_subprogs(env);
 	ret = ret ?: do_check_main(env);
+
+	for (i = 0; i < env->prog->len; i++) {
+		verbose(env, "exit_dist %d: %d\n", i, env->insn_aux_data[i].exit_dist);
+	}
 
 	if (ret == 0 && bpf_prog_is_dev_bound(env->prog->aux))
 		ret = bpf_prog_offload_finalize(env);

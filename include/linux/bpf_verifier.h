@@ -429,6 +429,7 @@ struct bpf_insn_aux_data {
 	/* below fields are initialized once */
 	unsigned int orig_idx; /* original instruction index */
 	bool prune_point;
+	int exit_dist;
 };
 
 #define MAX_USED_MAPS 64 /* max number of maps accessed by one eBPF program */
