@@ -620,7 +620,7 @@ struct bpf_object {
 	size_t nr_maps;
 	size_t maps_cap;
 
-	char *kconfig;
+	char *extra_kconfig;
 	struct extern_desc *externs;
 	int nr_extern;
 	int kconfig_map_idx;
@@ -5662,8 +5662,7 @@ static int bpf_core_resolve_relo(struct bpf_program *prog,
 				       targ_res);
 }
 
-static int
-bpf_object__relocate_core(struct bpf_object *obj, const char *targ_btf_path)
+static int bpf_object_relocate_core(struct bpf_object *obj)
 {
 	const struct btf_ext_info_sec *sec;
 	struct bpf_core_relo_res targ_res;
@@ -5679,8 +5678,8 @@ bpf_object__relocate_core(struct bpf_object *obj, const char *targ_btf_path)
 	if (obj->btf_ext->core_relo_info.len == 0)
 		return 0;
 
-	if (targ_btf_path) {
-		obj->btf_vmlinux_override = btf__parse(targ_btf_path, NULL);
+	if (obj->btf_custom_path) {
+		obj->btf_vmlinux_override = btf__parse(obj->btf_custom_path, NULL);
 		err = libbpf_get_error(obj->btf_vmlinux_override);
 		if (err) {
 			pr_warn("failed to parse target BTF: %d\n", err);
@@ -6370,15 +6369,14 @@ static void bpf_object__sort_relos(struct bpf_object *obj)
 	}
 }
 
-static int
-bpf_object__relocate(struct bpf_object *obj, const char *targ_btf_path)
+static int bpf_object_relocate(struct bpf_object *obj)
 {
 	struct bpf_program *prog;
 	size_t i, j;
 	int err;
 
 	if (obj->btf_ext) {
-		err = bpf_object__relocate_core(obj, targ_btf_path);
+		err = bpf_object_relocate_core(obj);
 		if (err) {
 			pr_warn("failed to perform CO-RE relocations: %d\n",
 				err);
@@ -6734,8 +6732,7 @@ static int libbpf_prepare_prog_load(struct bpf_program *prog,
 static void fixup_verifier_log(struct bpf_program *prog, char *buf, size_t buf_sz);
 
 static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog,
-				struct bpf_insn *insns, int insns_cnt,
-				const char *license, __u32 kern_version, int *prog_fd)
+				struct bpf_insn *insns, int insns_cnt, int *prog_fd)
 {
 	LIBBPF_OPTS(bpf_prog_load_opts, load_attr);
 	const char *prog_name = NULL;
@@ -6765,7 +6762,7 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
 	load_attr.attach_prog_fd = prog->attach_prog_fd;
 	load_attr.attach_btf_obj_fd = prog->attach_btf_obj_fd;
 	load_attr.attach_btf_id = prog->attach_btf_id;
-	load_attr.kern_version = kern_version;
+	load_attr.kern_version = obj->kern_version;
 	load_attr.prog_ifindex = prog->prog_ifindex;
 
 	/* specify func_info/line_info only if kernel supports them */
@@ -6797,7 +6794,7 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
 
 	if (obj->gen_loader) {
 		bpf_gen__prog_load(obj->gen_loader, prog->type, prog->name,
-				   license, insns, insns_cnt, &load_attr,
+				   obj->license, insns, insns_cnt, &load_attr,
 				   prog - obj->programs);
 		*prog_fd = -1;
 		return 0;
@@ -6835,7 +6832,7 @@ retry_load:
 	load_attr.log_size = log_buf_size;
 	load_attr.log_level = log_level;
 
-	ret = bpf_prog_load(prog->type, prog_name, license, insns, insns_cnt, &load_attr);
+	ret = bpf_prog_load(prog->type, prog_name, obj->license, insns, insns_cnt, &load_attr);
 	if (ret >= 0) {
 		if (log_level && own_log_buf) {
 			pr_debug("prog '%s': -- BEGIN PROG LOAD LOG --\n%s-- END PROG LOAD LOG --\n",
@@ -7102,8 +7099,7 @@ static int bpf_program_record_relos(struct bpf_program *prog)
 	return 0;
 }
 
-static int
-bpf_object__load_progs(struct bpf_object *obj, int log_level)
+static int bpf_object_load_progs(struct bpf_object *obj)
 {
 	struct bpf_program *prog;
 	size_t i;
@@ -7124,13 +7120,11 @@ bpf_object__load_progs(struct bpf_object *obj, int log_level)
 			pr_debug("prog '%s': skipped loading\n", prog->name);
 			continue;
 		}
-		prog->log_level |= log_level;
 
 		if (obj->gen_loader)
 			bpf_program_record_relos(prog);
 
-		err = bpf_object_load_prog(obj, prog, prog->insns, prog->insns_cnt,
-					   obj->license, obj->kern_version, &prog->fd);
+		err = bpf_object_load_prog(obj, prog, prog->insns, prog->insns_cnt, &prog->fd);
 		if (err) {
 			pr_warn("prog '%s': failed to load: %d\n", prog->name, err);
 			return err;
@@ -7239,8 +7233,8 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 
 	kconfig = OPTS_GET(opts, kconfig, NULL);
 	if (kconfig) {
-		obj->kconfig = strdup(kconfig);
-		if (!obj->kconfig) {
+		obj->extra_kconfig = strdup(kconfig);
+		if (!obj->extra_kconfig) {
 			err = -ENOMEM;
 			goto out;
 		}
@@ -7567,8 +7561,7 @@ static int bpf_object__resolve_ksyms_btf_id(struct bpf_object *obj)
 	return 0;
 }
 
-static int bpf_object__resolve_externs(struct bpf_object *obj,
-				       const char *extra_kconfig)
+static int bpf_object_resolve_externs(struct bpf_object *obj)
 {
 	bool need_config = false, need_kallsyms = false;
 	bool need_vmlinux_btf = false;
@@ -7634,8 +7627,8 @@ static int bpf_object__resolve_externs(struct bpf_object *obj,
 			return -EINVAL;
 		}
 	}
-	if (need_config && extra_kconfig) {
-		err = bpf_object__read_kconfig_mem(obj, extra_kconfig, kcfg_data);
+	if (need_config && obj->extra_kconfig) {
+		err = bpf_object__read_kconfig_mem(obj, obj->extra_kconfig, kcfg_data);
 		if (err)
 			return -EINVAL;
 		need_config = false;
@@ -7677,7 +7670,7 @@ static int bpf_object__resolve_externs(struct bpf_object *obj,
 	return 0;
 }
 
-static int bpf_object_load(struct bpf_object *obj, int extra_log_level, const char *target_btf_path)
+static int bpf_object_load(struct bpf_object *obj)
 {
 	int err, i;
 
@@ -7690,17 +7683,17 @@ static int bpf_object_load(struct bpf_object *obj, int extra_log_level, const ch
 	}
 
 	if (obj->gen_loader)
-		bpf_gen__init(obj->gen_loader, extra_log_level, obj->nr_programs, obj->nr_maps);
+		bpf_gen__init(obj->gen_loader, obj->log_level, obj->nr_programs, obj->nr_maps);
 
 	err = bpf_object__probe_loading(obj);
 	err = err ? : bpf_object__load_vmlinux_btf(obj, false);
-	err = err ? : bpf_object__resolve_externs(obj, obj->kconfig);
+	err = err ? : bpf_object_resolve_externs(obj);
 	err = err ? : bpf_object__sanitize_and_load_btf(obj);
 	err = err ? : bpf_object__sanitize_maps(obj);
 	err = err ? : bpf_object__init_kern_struct_ops_maps(obj);
 	err = err ? : bpf_object__create_maps(obj);
-	err = err ? : bpf_object__relocate(obj, obj->btf_custom_path ? : target_btf_path);
-	err = err ? : bpf_object__load_progs(obj, extra_log_level);
+	err = err ? : bpf_object_relocate(obj);
+	err = err ? : bpf_object_load_progs(obj);
 	err = err ? : bpf_object_init_prog_arrays(obj);
 
 	if (obj->gen_loader) {
@@ -7747,7 +7740,7 @@ out:
 
 int bpf_object__load(struct bpf_object *obj)
 {
-	return bpf_object_load(obj, 0, NULL);
+	return bpf_object_load(obj);
 }
 
 static int make_parent_dir(const char *path)
@@ -8192,7 +8185,7 @@ void bpf_object__close(struct bpf_object *obj)
 		bpf_map__destroy(&obj->maps[i]);
 
 	zfree(&obj->btf_custom_path);
-	zfree(&obj->kconfig);
+	zfree(&obj->extra_kconfig);
 	zfree(&obj->externs);
 	obj->nr_extern = 0;
 
