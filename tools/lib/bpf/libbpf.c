@@ -6332,8 +6332,7 @@ bpf_object__relocate_calls(struct bpf_object *obj, struct bpf_program *prog)
 	return 0;
 }
 
-static void
-bpf_object__free_relocs(struct bpf_object *obj)
+static void bpf_object_free_relocs(struct bpf_object *obj)
 {
 	struct bpf_program *prog;
 	int i;
@@ -7105,11 +7104,10 @@ static int bpf_program_record_relos(struct bpf_program *prog)
 	return 0;
 }
 
-static int bpf_object_load_progs(struct bpf_object *obj)
+static int bpf_object_prepare_progs(struct bpf_object *obj)
 {
 	struct bpf_program *prog;
-	size_t i;
-	int err;
+	int i, err;
 
 	for (i = 0; i < obj->nr_programs; i++) {
 		prog = &obj->programs[i];
@@ -7117,6 +7115,14 @@ static int bpf_object_load_progs(struct bpf_object *obj)
 		if (err)
 			return err;
 	}
+
+	return 0;
+}
+
+static int bpf_object_load_progs(struct bpf_object *obj)
+{
+	struct bpf_program *prog;
+	int i, err;
 
 	for (i = 0; i < obj->nr_programs; i++) {
 		prog = &obj->programs[i];
@@ -7137,7 +7143,7 @@ static int bpf_object_load_progs(struct bpf_object *obj)
 		}
 	}
 
-	bpf_object__free_relocs(obj);
+	bpf_object_free_relocs(obj);
 	return 0;
 }
 
@@ -7289,6 +7295,17 @@ bpf_object__open_mem(const void *obj_buf, size_t obj_buf_sz,
 		return libbpf_err_ptr(-EINVAL);
 
 	return libbpf_ptr(bpf_object_open(NULL, obj_buf, obj_buf_sz, opts));
+}
+
+static void bpf_object_unpin(struct bpf_object *obj)
+{
+	int i;
+
+	/* unpin any maps that were auto-pinned during preparation */
+	for (i = 0; i < obj->nr_maps; i++) {
+		if (obj->maps[i].pinned && !obj->maps[i].reused)
+			(void)bpf_map__unpin(&obj->maps[i], NULL);
+	}
 }
 
 static int bpf_object_unload(struct bpf_object *obj)
@@ -7676,16 +7693,13 @@ static int bpf_object_resolve_externs(struct bpf_object *obj)
 	return 0;
 }
 
-static int bpf_object_load(struct bpf_object *obj)
+static int bpf_object_prepare(struct bpf_object *obj)
 {
-	int err, i;
+	int err;
 
-	if (!obj)
-		return libbpf_err(-EINVAL);
-
-	if (obj->state >= OBJ_LOADED) {
-		pr_warn("object '%s': load can't be attempted twice\n", obj->name);
-		return libbpf_err(-EINVAL);
+	if (obj->state >= OBJ_PREPARED) {
+		pr_warn("object '%s': preparation can't be attempted twice\n", obj->name);
+		return libbpf_err(-EBUSY);
 	}
 
 	if (obj->gen_loader)
@@ -7699,6 +7713,66 @@ static int bpf_object_load(struct bpf_object *obj)
 	err = err ? : bpf_object__init_kern_struct_ops_maps(obj);
 	err = err ? : bpf_object__create_maps(obj);
 	err = err ? : bpf_object_relocate(obj);
+	err = err ? : bpf_object_prepare_progs(obj);
+
+	obj->state = OBJ_PREPARED; /* doesn't matter if successfully or not */
+
+	if (err)
+		goto out;
+
+	return 0;
+out:
+	bpf_object_unpin(obj);
+	bpf_object_unload(obj);
+	pr_warn("object '%s': failed to prepare\n", obj->name);
+	return err;
+}
+
+static void bpf_object_post_load_cleanup(struct bpf_object *obj)
+{
+	int i;
+
+	/* make sure reloc_descs are freed */
+	bpf_object_free_relocs(obj);
+
+	/* clean up fd_array */
+	zfree(&obj->fd_array);
+
+	/* clean up module BTFs */
+	for (i = 0; i < obj->btf_module_cnt; i++) {
+		zclose(obj->btf_modules[i].fd);
+		btf__free(obj->btf_modules[i].btf);
+		zfree(&obj->btf_modules[i].name);
+	}
+	zfree(&obj->btf_modules);
+	obj->btf_module_cnt = obj->btf_module_cap = 0;
+
+	/* clean up vmlinux BTF */
+	btf__free(obj->btf_vmlinux);
+	obj->btf_vmlinux = NULL;
+}
+
+static int bpf_object_load(struct bpf_object *obj)
+{
+	int err, i;
+
+	if (!obj)
+		return libbpf_err(-EINVAL);
+
+	if (obj->state >= OBJ_LOADED) {
+		pr_warn("object '%s': load can't be attempted twice\n", obj->name);
+		return libbpf_err(-EINVAL);
+	}
+
+	/* users don't have to call bpf_object__prepare() explicitly, so make
+	 * sure bpf_object is properly prepared, if it wasn't yet called
+	 */
+	if (obj->state < OBJ_PREPARED) {
+		err = bpf_object_prepare(obj);
+		if (err)
+			return err;
+	}
+
 	err = err ? : bpf_object_load_progs(obj);
 	err = err ? : bpf_object_init_prog_arrays(obj);
 
@@ -7712,20 +7786,7 @@ static int bpf_object_load(struct bpf_object *obj)
 			err = bpf_gen__finish(obj->gen_loader, obj->nr_programs, obj->nr_maps);
 	}
 
-	/* clean up fd_array */
-	zfree(&obj->fd_array);
-
-	/* clean up module BTFs */
-	for (i = 0; i < obj->btf_module_cnt; i++) {
-		close(obj->btf_modules[i].fd);
-		btf__free(obj->btf_modules[i].btf);
-		free(obj->btf_modules[i].name);
-	}
-	free(obj->btf_modules);
-
-	/* clean up vmlinux BTF */
-	btf__free(obj->btf_vmlinux);
-	obj->btf_vmlinux = NULL;
+	bpf_object_post_load_cleanup(obj);
 
 	obj->state = OBJ_LOADED; /* doesn't matter if successfully or not */
 
@@ -7734,19 +7795,15 @@ static int bpf_object_load(struct bpf_object *obj)
 
 	return 0;
 out:
-	/* unpin any maps that were auto-pinned during load */
-	for (i = 0; i < obj->nr_maps; i++)
-		if (obj->maps[i].pinned && !obj->maps[i].reused)
-			bpf_map__unpin(&obj->maps[i], NULL);
-
+	bpf_object_unpin(obj);
 	bpf_object_unload(obj);
-	pr_warn("failed to load object '%s'\n", obj->path);
-	return libbpf_err(err);
+	pr_warn("object '%s': failed to load\n", obj->name);
+	return err;
 }
 
 int bpf_object__load(struct bpf_object *obj)
 {
-	return bpf_object_load(obj);
+	return libbpf_err(bpf_object_load(obj));
 }
 
 static int make_parent_dir(const char *path)
@@ -8167,16 +8224,21 @@ static void bpf_map__destroy(struct bpf_map *map)
 	zfree(&map->real_name);
 	zfree(&map->pin_path);
 
-	if (map->fd >= 0)
-		zclose(map->fd);
+	zclose(map->fd);
 }
 
 void bpf_object__close(struct bpf_object *obj)
 {
 	size_t i;
 
-	if (IS_ERR_OR_NULL(obj))
+	if (!obj)
 		return;
+
+	/* if user called bpf_object__prepare() without ever getting to
+	 * bpf_object__load(), we need to clean up stuff that is normally
+	 * cleaned up at the end of loading step
+	 */
+	bpf_object_post_load_cleanup(obj);
 
 	usdt_manager_free(obj->usdt_man);
 	obj->usdt_man = NULL;
