@@ -609,11 +609,18 @@ struct elf_state {
 
 struct usdt_manager;
 
+enum bpf_object_state {
+	OBJ_OPEN,
+	OBJ_PREPARED,
+	OBJ_LOADED,
+};
+
 struct bpf_object {
 	char name[BPF_OBJ_NAME_LEN];
 	char license[64];
 	__u32 kern_version;
 
+	enum bpf_object_state state;
 	struct bpf_program *programs;
 	size_t nr_programs;
 	struct bpf_map *maps;
@@ -625,7 +632,6 @@ struct bpf_object {
 	int nr_extern;
 	int kconfig_map_idx;
 
-	bool loaded;
 	bool has_subcalls;
 	bool has_rodata;
 
@@ -1211,10 +1217,10 @@ static int bpf_object__init_struct_ops_maps(struct bpf_object *obj)
 	return 0;
 }
 
-static struct bpf_object *bpf_object__new(const char *path,
-					  const void *obj_buf,
-					  size_t obj_buf_sz,
-					  const char *obj_name)
+static struct bpf_object *bpf_object_new(const char *path,
+					 const void *obj_buf,
+					 size_t obj_buf_sz,
+					 const char *obj_name)
 {
 	struct bpf_object *obj;
 	char *end;
@@ -1250,7 +1256,7 @@ static struct bpf_object *bpf_object__new(const char *path,
 	obj->kconfig_map_idx = -1;
 
 	obj->kern_version = get_kernel_version();
-	obj->loaded = false;
+	obj->state = OBJ_OPEN;
 
 	return obj;
 }
@@ -4330,7 +4336,7 @@ bool bpf_map__autocreate(const struct bpf_map *map)
 
 int bpf_map__set_autocreate(struct bpf_map *map, bool autocreate)
 {
-	if (map->obj->loaded)
+	if (map->obj->state >= OBJ_PREPARED)
 		return libbpf_err(-EBUSY);
 
 	map->autocreate = autocreate;
@@ -4415,7 +4421,7 @@ struct bpf_map *bpf_map__inner_map(struct bpf_map *map)
 
 int bpf_map__set_max_entries(struct bpf_map *map, __u32 max_entries)
 {
-	if (map->obj->loaded)
+	if (map->obj->state >= OBJ_PREPARED)
 		return libbpf_err(-EBUSY);
 
 	map->def.max_entries = max_entries;
@@ -7210,7 +7216,7 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 	if (log_size && !log_buf)
 		return ERR_PTR(-EINVAL);
 
-	obj = bpf_object__new(path, obj_buf, obj_buf_sz, obj_name);
+	obj = bpf_object_new(path, obj_buf, obj_buf_sz, obj_name);
 	if (IS_ERR(obj))
 		return obj;
 
@@ -7677,7 +7683,7 @@ static int bpf_object_load(struct bpf_object *obj)
 	if (!obj)
 		return libbpf_err(-EINVAL);
 
-	if (obj->loaded) {
+	if (obj->state >= OBJ_LOADED) {
 		pr_warn("object '%s': load can't be attempted twice\n", obj->name);
 		return libbpf_err(-EINVAL);
 	}
@@ -7721,7 +7727,7 @@ static int bpf_object_load(struct bpf_object *obj)
 	btf__free(obj->btf_vmlinux);
 	obj->btf_vmlinux = NULL;
 
-	obj->loaded = true; /* doesn't matter if successfully or not */
+	obj->state = OBJ_LOADED; /* doesn't matter if successfully or not */
 
 	if (err)
 		goto out;
@@ -7988,7 +7994,7 @@ int bpf_object__pin_maps(struct bpf_object *obj, const char *path)
 	if (!obj)
 		return libbpf_err(-ENOENT);
 
-	if (!obj->loaded) {
+	if (obj->state < OBJ_PREPARED) {
 		pr_warn("object not yet loaded; load it first\n");
 		return libbpf_err(-ENOENT);
 	}
@@ -8067,7 +8073,7 @@ int bpf_object__pin_programs(struct bpf_object *obj, const char *path)
 	if (!obj)
 		return libbpf_err(-ENOENT);
 
-	if (!obj->loaded) {
+	if (obj->state < OBJ_LOADED) {
 		pr_warn("object not yet loaded; load it first\n");
 		return libbpf_err(-ENOENT);
 	}
@@ -8223,7 +8229,7 @@ int bpf_object__btf_fd(const struct bpf_object *obj)
 
 int bpf_object__set_kversion(struct bpf_object *obj, __u32 kern_version)
 {
-	if (obj->loaded)
+	if (obj->state >= OBJ_LOADED)
 		return libbpf_err(-EINVAL);
 
 	obj->kern_version = kern_version;
@@ -8319,7 +8325,7 @@ bool bpf_program__autoload(const struct bpf_program *prog)
 
 int bpf_program__set_autoload(struct bpf_program *prog, bool autoload)
 {
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return libbpf_err(-EINVAL);
 
 	prog->autoload = autoload;
@@ -8351,7 +8357,7 @@ int bpf_program__set_insns(struct bpf_program *prog,
 {
 	struct bpf_insn *insns;
 
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return -EBUSY;
 
 	insns = libbpf_reallocarray(prog->insns, new_insn_cnt, sizeof(*insns));
@@ -8387,7 +8393,7 @@ enum bpf_prog_type bpf_program__type(const struct bpf_program *prog)
 
 int bpf_program__set_type(struct bpf_program *prog, enum bpf_prog_type type)
 {
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return libbpf_err(-EBUSY);
 
 	prog->type = type;
@@ -8405,7 +8411,7 @@ enum bpf_attach_type bpf_program__expected_attach_type(const struct bpf_program 
 int bpf_program__set_expected_attach_type(struct bpf_program *prog,
 					   enum bpf_attach_type type)
 {
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return libbpf_err(-EBUSY);
 
 	prog->expected_attach_type = type;
@@ -8419,7 +8425,7 @@ __u32 bpf_program__flags(const struct bpf_program *prog)
 
 int bpf_program__set_flags(struct bpf_program *prog, __u32 flags)
 {
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return libbpf_err(-EBUSY);
 
 	prog->prog_flags = flags;
@@ -8433,7 +8439,7 @@ __u32 bpf_program__log_level(const struct bpf_program *prog)
 
 int bpf_program__set_log_level(struct bpf_program *prog, __u32 log_level)
 {
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return libbpf_err(-EBUSY);
 
 	prog->log_level = log_level;
@@ -8452,7 +8458,7 @@ int bpf_program__set_log_buf(struct bpf_program *prog, char *log_buf, size_t log
 		return -EINVAL;
 	if (prog->log_size > UINT_MAX)
 		return -EINVAL;
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return -EBUSY;
 
 	prog->log_buf = log_buf;
@@ -12177,7 +12183,7 @@ int bpf_program__set_attach_target(struct bpf_program *prog,
 	if (!prog || attach_prog_fd < 0)
 		return libbpf_err(-EINVAL);
 
-	if (prog->obj->loaded)
+	if (prog->obj->state >= OBJ_LOADED)
 		return libbpf_err(-EINVAL);
 
 	if (attach_prog_fd && !attach_func_name) {
