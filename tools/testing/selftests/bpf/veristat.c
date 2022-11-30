@@ -14,6 +14,7 @@
 #include <sys/time.h>
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <libelf.h>
 #include <gelf.h>
@@ -811,19 +812,16 @@ static void fixup_obj(struct bpf_object *obj)
 	}
 }
 
-static int process_prog(const char *filename, struct bpf_object *obj, struct bpf_program *prog)
+static int process_prog(const char *filename, struct bpf_object *obj, struct bpf_program *prog,
+			bool raw_load)
 {
+	LIBBPF_OPTS(bpf_prog_load_opts, opts);
 	const char *prog_name = bpf_program__name(prog);
 	size_t buf_sz = sizeof(verif_log_buf);
 	char *buf = verif_log_buf;
 	struct verif_stats *stats;
 	int err = 0;
 	void *tmp;
-
-	if (!should_process_file_prog(basename(filename), bpf_program__name(prog))) {
-		env.progs_skipped++;
-		return 0;
-	}
 
 	tmp = realloc(env.prog_stats, (env.prog_stat_cnt + 1) * sizeof(*env.prog_stats));
 	if (!tmp)
@@ -837,18 +835,44 @@ static int process_prog(const char *filename, struct bpf_object *obj, struct bpf
 		buf = malloc(buf_sz);
 		if (!buf)
 			return -ENOMEM;
-		bpf_program__set_log_buf(prog, buf, buf_sz);
-		bpf_program__set_log_level(prog, env.log_level | 4); /* stats + log */
+	}
+	buf[0] = '\0';
+
+	if (raw_load) {
+		if (env.verbose)
+			opts.log_level = env.log_level | 4; /* stats + log */
+		else
+			opts.log_level = 4; /* only verifier stats */
+		opts.log_buf = buf;
+		opts.log_size = buf_sz;
+
+		opts.expected_attach_type = bpf_program__expected_attach_type(prog);
+		opts.prog_btf_fd = bpf_object__btf_fd(obj);
+		opts.prog_flags = bpf_program__flags(prog);
+		opts.prog_ifindex = 0; /* bpf_program__ifindex(prog); */
+		opts.kern_version = bpf_object__kversion(obj);
+
+		/*
+		opts.attach_btf_id = ...;
+		opts.attach_prog_fd = ...;
+		opts.attach_btf_obj_fd = ...;
+		*/
+
+		err = bpf_prog_load(bpf_program__type(prog),
+				    bpf_program__name(prog),
+				    "GPL" /* bpf_object__license(prog) */,
+				    bpf_program__insns(prog),
+				    bpf_program__insn_cnt(prog),
+				    &opts);
 	} else {
 		bpf_program__set_log_buf(prog, buf, buf_sz);
-		bpf_program__set_log_level(prog, 4); /* only verifier stats */
+		if (env.verbose)
+			bpf_program__set_log_level(prog, env.log_level | 4); /* stats + log */
+		else
+			bpf_program__set_log_level(prog, 4); /* only verifier stats */
+		err = bpf_object__load(obj);
 	}
-	verif_log_buf[0] = '\0';
 
-	/* increase chances of successful BPF object loading */
-	fixup_obj(obj);
-
-	err = bpf_object__load(obj);
 	env.progs_processed++;
 
 	stats->file_name = strdup(basename(filename));
@@ -870,8 +894,8 @@ static int process_prog(const char *filename, struct bpf_object *obj, struct bpf
 
 static int process_obj(const char *filename)
 {
-	struct bpf_object *obj = NULL, *tobj;
-	struct bpf_program *prog, *tprog, *lprog;
+	struct bpf_object *obj = NULL;
+	struct bpf_program *prog, *lprog;
 	libbpf_print_fn_t old_libbpf_print_fn;
 	LIBBPF_OPTS(bpf_object_open_opts, opts);
 	int err = 0, prog_cnt = 0;
@@ -909,40 +933,43 @@ static int process_obj(const char *filename)
 
 	env.files_processed++;
 
+	/* increase chances of successful BPF object loading */
+	fixup_obj(obj);
+
+	lprog = NULL;
 	bpf_object__for_each_program(prog, obj) {
-		prog_cnt++;
+		bpf_program__set_autoload(prog, false);
+
+		if (should_process_file_prog(basename(filename), bpf_program__name(prog))) {
+			prog_cnt++;
+			lprog = prog;
+		} else {
+			env.progs_skipped++;
+		}
 	}
 
+	/* special case, preserve func and line info */
 	if (prog_cnt == 1) {
-		prog = bpf_object__next_program(obj, NULL);
-		bpf_program__set_autoload(prog, true);
-		process_prog(filename, obj, prog);
+		bpf_program__set_autoload(lprog, true);
+		process_prog(filename, obj, lprog, false /* full obj load */);
+		goto cleanup;
+	}
+
+	/* increase chances of successful BPF object loading */
+	fixup_obj(obj);
+	err = bpf_object__prepare(obj);
+	if (err) {
+		fprintf(stderr, "Failed to prepare '%s': %d\n", filename, err);
+		env.files_skipped++;
+		err = 0;
 		goto cleanup;
 	}
 
 	bpf_object__for_each_program(prog, obj) {
-		const char *prog_name = bpf_program__name(prog);
+		if (!should_process_file_prog(basename(filename), bpf_program__name(prog)))
+			continue;
 
-		tobj = bpf_object__open_file(filename, &opts);
-		if (!tobj) {
-			err = -errno;
-			fprintf(stderr, "Failed to open '%s': %d\n", filename, err);
-			goto cleanup;
-		}
-
-		bpf_object__for_each_program(tprog, tobj) {
-			const char *tprog_name = bpf_program__name(tprog);
-
-			if (strcmp(prog_name, tprog_name) == 0) {
-				bpf_program__set_autoload(tprog, true);
-				lprog = tprog;
-			} else {
-				bpf_program__set_autoload(tprog, false);
-			}
-		}
-
-		process_prog(filename, tobj, lprog);
-		bpf_object__close(tobj);
+		process_prog(filename, obj, prog, true /* raw load */);
 	}
 
 cleanup:
@@ -1221,7 +1248,7 @@ static void output_stats(const struct verif_stats *s, enum resfmt fmt, bool last
 	if (last && fmt == RESFMT_TABLE) {
 		output_header_underlines();
 		printf("Done. Processed %d files, %d programs. Skipped %d files, %d programs.\n",
-		       env.files_processed, env.files_skipped, env.progs_processed, env.progs_skipped);
+		       env.files_processed, env.progs_processed, env.files_skipped, env.progs_skipped);
 	}
 }
 
