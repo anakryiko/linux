@@ -786,10 +786,27 @@ static void fixup_obj(struct bpf_object *obj)
 		case BPF_MAP_TYPE_TASK_STORAGE:
 		case BPF_MAP_TYPE_INODE_STORAGE:
 		case BPF_MAP_TYPE_CGROUP_STORAGE:
+		case BPF_MAP_TYPE_CGRP_STORAGE:
 			break;
 		default:
 			if (bpf_map__max_entries(map) == 0)
 				bpf_map__set_max_entries(map, 1);
+		}
+
+		/* fix up map key/value size, if necessary */
+		switch (bpf_map__type(map)) {
+		case BPF_MAP_TYPE_ARRAY:
+		case BPF_MAP_TYPE_HASH:
+			if (bpf_map__key_size(map) == 0)
+				bpf_map__set_key_size(map, 4);
+			if (bpf_map__value_size(map) == 0)
+				bpf_map__set_value_size(map, 8);
+			break;
+		case BPF_MAP_TYPE_BLOOM_FILTER:
+			if (bpf_map__value_size(map) == 0)
+				bpf_map__set_value_size(map, 8);
+			break;
+		default:
 		}
 	}
 }
