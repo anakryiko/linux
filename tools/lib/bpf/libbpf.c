@@ -7801,6 +7801,11 @@ out:
 	return err;
 }
 
+int bpf_object__prepare(struct bpf_object *obj)
+{
+	return libbpf_err(bpf_object_prepare(obj));
+}
+
 int bpf_object__load(struct bpf_object *obj)
 {
 	return libbpf_err(bpf_object_load(obj));

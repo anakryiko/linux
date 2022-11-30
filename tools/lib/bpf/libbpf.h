@@ -226,6 +226,8 @@ bpf_object__open_mem(const void *obj_buf, size_t obj_buf_sz,
  */
 LIBBPF_API int bpf_object__load(struct bpf_object *obj);
 
+LIBBPF_API int bpf_object__prepare(struct bpf_object *obj);
+
 /**
  * @brief **bpf_object__close()** closes a BPF object and releases all
  * resources.
