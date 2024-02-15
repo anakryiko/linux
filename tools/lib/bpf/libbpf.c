@@ -5024,21 +5024,6 @@ static int bpf_object__create_map(struct bpf_object *obj, struct bpf_map *map, b
 	if (map->fd == map_fd)
 		return 0;
 
-	if (def->type == BPF_MAP_TYPE_ARENA) {
-		map->mmaped = mmap((void *)map->map_extra, bpf_map_mmap_sz(map),
-				   PROT_READ | PROT_WRITE,
-				   map->map_extra ? MAP_SHARED | MAP_FIXED : MAP_SHARED,
-				   map_fd, 0);
-		if (map->mmaped == MAP_FAILED) {
-			err = -errno;
-			map->mmaped = NULL;
-			close(map_fd);
-			pr_warn("map '%s': failed to mmap bpf_arena: %d\n",
-				bpf_map__name(map), err);
-			return err;
-		}
-	}
-
 	/* Keep placeholder FD value but now point it to the BPF map object.
 	 * This way everything that relied on this map's FD (e.g., relocated
 	 * ldimm64 instructions) will stay valid and won't need adjustments.
@@ -5232,7 +5217,19 @@ retry:
 				if (err < 0)
 					goto err_out;
 			}
-
+			if (map->def.type == BPF_MAP_TYPE_ARENA) {
+				map->mmaped = mmap((void *)map->map_extra, bpf_map_mmap_sz(map),
+						   PROT_READ | PROT_WRITE,
+						   map->map_extra ? MAP_SHARED | MAP_FIXED : MAP_SHARED,
+						   map->fd, 0);
+				if (map->mmaped == MAP_FAILED) {
+					err = -errno;
+					map->mmaped = NULL;
+					pr_warn("map '%s': failed to mmap arena: %d\n",
+						map->name, err);
+					return err;
+				}
+			}
 			if (map->init_slots_sz && map->def.type != BPF_MAP_TYPE_PROG_ARRAY) {
 				err = init_map_in_map_slots(obj, map);
 				if (err < 0)
