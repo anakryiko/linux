@@ -1526,6 +1526,9 @@ struct bpf_prog_aux {
 	struct module *mod;
 	u32 num_exentries;
 	struct exception_table_entry *extable;
+	u64 fault_count;
+	unsigned long fault_ip;
+	u32 fault_insn;
 	union {
 		struct work_struct work;
 		struct rcu_head	rcu;
