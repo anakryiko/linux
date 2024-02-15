@@ -496,7 +496,7 @@ unsigned long bpf_map_alloc_pages(const struct bpf_map *map, gfp_t gfp, int nid,
 		pages[0] = pg;
 		ret = !!pg;
 	} else {
-		ret = alloc_pages_bulk_array_node(gfp | __GFP_ACCOUNT, nid, nr_pages, pages);
+		ret = alloc_pages_bulk_array_node(gfp, nid, nr_pages, pages);
 	}
 
 #ifdef CONFIG_MEMCG_KMEM
