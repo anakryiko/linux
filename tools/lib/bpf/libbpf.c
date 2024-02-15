@@ -506,7 +506,6 @@ enum libbpf_map_type {
 	LIBBPF_MAP_BSS,
 	LIBBPF_MAP_RODATA,
 	LIBBPF_MAP_KCONFIG,
-	LIBBPF_MAP_ARENA,
 };
 
 struct bpf_map_def {
@@ -549,7 +548,6 @@ struct bpf_map {
 	bool reused;
 	bool autocreate;
 	__u64 map_extra;
-	struct bpf_map *arena;
 };
 
 enum extern_type {
@@ -616,7 +614,6 @@ enum sec_type {
 	SEC_BSS,
 	SEC_DATA,
 	SEC_RODATA,
-	SEC_ARENA,
 };
 
 struct elf_sec_desc {
@@ -634,6 +631,7 @@ struct elf_state {
 	Elf_Data *symbols;
 	Elf_Data *st_ops_data;
 	Elf_Data *st_ops_link_data;
+	Elf_Data *arena_data;
 	size_t shstrndx; /* section index for section name strings */
 	size_t strtabidx;
 	struct elf_sec_desc *secs;
@@ -644,6 +642,7 @@ struct elf_state {
 	int symbols_shndx;
 	int st_ops_shndx;
 	int st_ops_link_shndx;
+	int arena_data_shndx;
 };
 
 struct usdt_manager;
@@ -702,6 +701,10 @@ struct bpf_object {
 	size_t fd_array_cnt;
 
 	struct usdt_manager *usdt_man;
+
+	struct bpf_map *arena_map;
+	void *arena_data;
+	size_t arena_data_sz;
 
 	struct kern_feature_cache *feat_cache;
 	char *token_path;
@@ -1340,6 +1343,7 @@ static void bpf_object__elf_finish(struct bpf_object *obj)
 	obj->efile.symbols = NULL;
 	obj->efile.st_ops_data = NULL;
 	obj->efile.st_ops_link_data = NULL;
+	obj->efile.arena_data = NULL;
 
 	zfree(&obj->efile.secs);
 	obj->efile.sec_cnt = 0;
@@ -1722,34 +1726,10 @@ static int
 bpf_object__init_internal_map(struct bpf_object *obj, enum libbpf_map_type type,
 			      const char *real_name, int sec_idx, void *data, size_t data_sz)
 {
-	const long page_sz = sysconf(_SC_PAGE_SIZE);
-	struct bpf_map *map, *arena = NULL;
 	struct bpf_map_def *def;
+	struct bpf_map *map;
 	size_t mmap_sz;
-	int err, i;
-
-	if (type == LIBBPF_MAP_ARENA) {
-		for (i = 0; i < obj->nr_maps; i++) {
-			map = &obj->maps[i];
-			if (map->def.type != BPF_MAP_TYPE_ARENA)
-				continue;
-			arena = map;
-			real_name = "__arena_internal";
-		        mmap_sz = bpf_map_mmap_sz(map);
-			if (roundup(data_sz, page_sz) > mmap_sz) {
-				pr_warn("Declared arena map size %zd is too small to hold"
-					"global __arena variables of size %zd\n",
-					mmap_sz, data_sz);
-				return -E2BIG;
-			}
-			break;
-		}
-		if (!arena) {
-			pr_warn("To use global __arena variables the arena map should"
-				"be declared explicitly in SEC(\".maps\")\n");
-			return -ENOENT;
-		}
-	}
+	int err;
 
 	map = bpf_object__add_map(obj);
 	if (IS_ERR(map))
@@ -1760,7 +1740,6 @@ bpf_object__init_internal_map(struct bpf_object *obj, enum libbpf_map_type type,
 	map->sec_offset = 0;
 	map->real_name = strdup(real_name);
 	map->name = internal_map_name(obj, real_name);
-	map->arena = arena;
 	if (!map->real_name || !map->name) {
 		zfree(&map->real_name);
 		zfree(&map->name);
@@ -1768,32 +1747,18 @@ bpf_object__init_internal_map(struct bpf_object *obj, enum libbpf_map_type type,
 	}
 
 	def = &map->def;
-	if (type == LIBBPF_MAP_ARENA) {
-		/* bpf_object will contain two arena maps:
-		 * LIBBPF_MAP_ARENA & BPF_MAP_TYPE_ARENA
-		 * and
-		 * LIBBPF_MAP_UNSPEC & BPF_MAP_TYPE_ARENA.
-		 * The former map->arena will point to latter.
-		 */
-		def->type = BPF_MAP_TYPE_ARENA;
-		def->key_size = 0;
-		def->value_size = 0;
-		def->max_entries = roundup(data_sz, page_sz) / page_sz;
-		def->map_flags = BPF_F_MMAPABLE;
-	} else {
-		def->type = BPF_MAP_TYPE_ARRAY;
-		def->key_size = sizeof(int);
-		def->value_size = data_sz;
-		def->max_entries = 1;
-		def->map_flags = type == LIBBPF_MAP_RODATA || type == LIBBPF_MAP_KCONFIG
-			? BPF_F_RDONLY_PROG : 0;
+	def->type = BPF_MAP_TYPE_ARRAY;
+	def->key_size = sizeof(int);
+	def->value_size = data_sz;
+	def->max_entries = 1;
+	def->map_flags = type == LIBBPF_MAP_RODATA || type == LIBBPF_MAP_KCONFIG
+		? BPF_F_RDONLY_PROG : 0;
 
-		/* failures are fine because of maps like .rodata.str1.1 */
-		(void) map_fill_btf_type_info(obj, map);
+	/* failures are fine because of maps like .rodata.str1.1 */
+	(void) map_fill_btf_type_info(obj, map);
 
-		if (map_is_mmapable(obj, map))
-			def->map_flags |= BPF_F_MMAPABLE;
-	}
+	if (map_is_mmapable(obj, map))
+		def->map_flags |= BPF_F_MMAPABLE;
 
 	pr_debug("map '%s' (global data): at sec_idx %d, offset %zu, flags %x.\n",
 		 map->name, map->sec_idx, map->sec_offset, def->map_flags);
@@ -1855,13 +1820,6 @@ static int bpf_object__init_global_data_maps(struct bpf_object *obj)
 			err = bpf_object__init_internal_map(obj, LIBBPF_MAP_BSS,
 							    sec_name, sec_idx,
 							    NULL,
-							    sec_desc->data->d_size);
-			break;
-		case SEC_ARENA:
-			sec_name = elf_sec_name(obj, elf_sec_by_idx(obj, sec_idx));
-			err = bpf_object__init_internal_map(obj, LIBBPF_MAP_ARENA,
-							    sec_name, sec_idx,
-							    sec_desc->data->d_buf,
 							    sec_desc->data->d_size);
 			break;
 		default:
@@ -2786,6 +2744,32 @@ static int bpf_object__init_user_btf_map(struct bpf_object *obj,
 	return 0;
 }
 
+static int init_arena_map_data(struct bpf_object *obj, struct bpf_map *map,
+			       const char *sec_name, int sec_idx,
+			       void *data, size_t data_sz)
+{
+	const long page_sz = sysconf(_SC_PAGE_SIZE);
+	size_t mmap_sz;
+
+	mmap_sz = bpf_map_mmap_sz(obj->arena_map);
+	if (roundup(data_sz, page_sz) > mmap_sz) {
+		pr_warn("elf: sec '%s': declared ARENA map size (%zu) is too small to hold global __arena variables of size %zu\n",
+			sec_name, mmap_sz, data_sz);
+		return -E2BIG;
+	}
+
+	obj->arena_data = malloc(data_sz);
+	if (!obj->arena_data)
+		return -ENOMEM;
+	memcpy(obj->arena_data, data, data_sz);
+	obj->arena_data_sz = data_sz;
+
+	/* make bpf_map__init_value() work for ARENA maps */
+	map->mmaped = obj->arena_data;
+
+	return 0;
+}
+
 static int bpf_object__init_user_btf_maps(struct bpf_object *obj, bool strict,
 					  const char *pin_root_path)
 {
@@ -2833,6 +2817,33 @@ static int bpf_object__init_user_btf_maps(struct bpf_object *obj, bool strict,
 						    pin_root_path);
 		if (err)
 			return err;
+	}
+
+	for (i = 0; i < obj->nr_maps; i++) {
+		struct bpf_map *map = &obj->maps[i];
+
+		if (map->def.type != BPF_MAP_TYPE_ARENA)
+			continue;
+
+		if (obj->arena_map) {
+			pr_warn("map '%s': only single ARENA map is supported (map '%s' is also ARENA)\n",
+				map->name, obj->arena_map->name);
+			return -EINVAL;
+		}
+		obj->arena_map = map;
+
+		if (obj->efile.arena_data) {
+			err = init_arena_map_data(obj, map, ARENA_SEC, obj->efile.arena_data_shndx,
+						  obj->efile.arena_data->d_buf,
+						  obj->efile.arena_data->d_size);
+			if (err)
+				return err;
+		}
+	}
+	if (obj->efile.arena_data && !obj->arena_map) {
+		pr_warn("elf: sec '%s': to use global __arena variables the ARENA map should be explicitly declared in SEC(\".maps\")\n",
+			ARENA_SEC);
+		return -ENOENT;
 	}
 
 	return 0;
@@ -3699,9 +3710,8 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 				obj->efile.st_ops_link_data = data;
 				obj->efile.st_ops_link_shndx = idx;
 			} else if (strcmp(name, ARENA_SEC) == 0) {
-				sec_desc->sec_type = SEC_ARENA;
-				sec_desc->shdr = sh;
-				sec_desc->data = data;
+				obj->efile.arena_data = data;
+				obj->efile.arena_data_shndx = idx;
 			} else {
 				pr_info("elf: skipping unrecognized data section(%d) %s\n",
 					idx, name);
@@ -4204,7 +4214,6 @@ static bool bpf_object__shndx_is_data(const struct bpf_object *obj,
 	case SEC_BSS:
 	case SEC_DATA:
 	case SEC_RODATA:
-	case SEC_ARENA:
 		return true;
 	default:
 		return false;
@@ -4230,8 +4239,6 @@ bpf_object__section_to_libbpf_map_type(const struct bpf_object *obj, int shndx)
 		return LIBBPF_MAP_DATA;
 	case SEC_RODATA:
 		return LIBBPF_MAP_RODATA;
-	case SEC_ARENA:
-		return LIBBPF_MAP_ARENA;
 	default:
 		return LIBBPF_MAP_UNSPEC;
 	}
@@ -4332,6 +4339,15 @@ static int bpf_program__record_reloc(struct bpf_program *prog,
 	type = bpf_object__section_to_libbpf_map_type(obj, shdr_idx);
 	sym_sec_name = elf_sec_name(obj, elf_sec_by_idx(obj, shdr_idx));
 
+	/* arena data relocation */
+	if (shdr_idx == obj->efile.arena_data_shndx) {
+		reloc_desc->type = RELO_DATA;
+		reloc_desc->insn_idx = insn_idx;
+		reloc_desc->map_idx = obj->arena_map - obj->maps;
+		reloc_desc->sym_off = sym->st_value;
+		return 0;
+	}
+
 	/* generic map reference relocation */
 	if (type == LIBBPF_MAP_UNSPEC) {
 		if (!bpf_object__shndx_is_maps(obj, shdr_idx)) {
@@ -4385,7 +4401,7 @@ static int bpf_program__record_reloc(struct bpf_program *prog,
 
 	reloc_desc->type = RELO_DATA;
 	reloc_desc->insn_idx = insn_idx;
-	reloc_desc->map_idx = map->arena ? map->arena - obj->maps : map_idx;
+	reloc_desc->map_idx = map_idx;
 	reloc_desc->sym_off = sym->st_value;
 	return 0;
 }
@@ -4872,8 +4888,6 @@ bpf_object__populate_internal_map(struct bpf_object *obj, struct bpf_map *map)
 			bpf_gen__map_freeze(obj->gen_loader, map - obj->maps);
 		return 0;
 	}
-	if (map_type == LIBBPF_MAP_ARENA)
-		return 0;
 
 	err = bpf_map_update_elem(map->fd, &zero, map->mmaped, 0);
 	if (err) {
@@ -5166,15 +5180,6 @@ bpf_object__create_maps(struct bpf_object *obj)
 		if (bpf_map__is_internal(map) && !kernel_supports(obj, FEAT_GLOBAL_DATA))
 			map->autocreate = false;
 
-		if (map->libbpf_type == LIBBPF_MAP_ARENA) {
-			size_t len = bpf_map_mmap_sz(map);
-
-			memcpy(map->arena->mmaped, map->mmaped, len);
-			map->autocreate = false;
-			munmap(map->mmaped, len);
-			map->mmaped = NULL;
-		}
-
 		if (!map->autocreate) {
 			pr_debug("map '%s': skipped auto-creating...\n", map->name);
 			continue;
@@ -5228,6 +5233,10 @@ retry:
 					pr_warn("map '%s': failed to mmap arena: %d\n",
 						map->name, err);
 					return err;
+				}
+				if (obj->arena_data) {
+					memcpy(map->mmaped, obj->arena_data, obj->arena_data_sz);
+					zfree(&obj->arena_data);
 				}
 			}
 			if (map->init_slots_sz && map->def.type != BPF_MAP_TYPE_PROG_ARRAY) {
@@ -8716,13 +8725,9 @@ static void bpf_map__destroy(struct bpf_map *map)
 	zfree(&map->init_slots);
 	map->init_slots_sz = 0;
 
-	if (map->mmaped) {
-		size_t mmap_sz;
-
-		mmap_sz = bpf_map_mmap_sz(map);
-		munmap(map->mmaped, mmap_sz);
-		map->mmaped = NULL;
-	}
+	if (map->mmaped && map->mmaped != map->obj->arena_data)
+		munmap(map->mmaped, bpf_map_mmap_sz(map));
+	map->mmaped = NULL;
 
 	if (map->st_ops) {
 		zfree(&map->st_ops->data);
@@ -8781,6 +8786,8 @@ void bpf_object__close(struct bpf_object *obj)
 	zfree(&obj->token_path);
 	if (obj->token_fd > 0)
 		close(obj->token_fd);
+
+	zfree(&obj->arena_data);
 
 	free(obj);
 }
@@ -9803,8 +9810,6 @@ static bool map_uses_real_name(const struct bpf_map *map)
 		return true;
 	if (map->libbpf_type == LIBBPF_MAP_RODATA && strcmp(map->real_name, RODATA_SEC) != 0)
 		return true;
-	if (map->libbpf_type == LIBBPF_MAP_ARENA)
-		return true;
 	return false;
 }
 
@@ -10006,22 +10011,35 @@ __u32 bpf_map__btf_value_type_id(const struct bpf_map *map)
 int bpf_map__set_initial_value(struct bpf_map *map,
 			       const void *data, size_t size)
 {
+	size_t actual_sz;
+
 	if (map->obj->loaded || map->reused)
 		return libbpf_err(-EBUSY);
 
-	if (!map->mmaped || map->libbpf_type == LIBBPF_MAP_KCONFIG ||
-	    size != map->def.value_size)
+	if (!map->mmaped || map->libbpf_type == LIBBPF_MAP_KCONFIG)
+		return libbpf_err(-EINVAL);
+
+	if (map->def.type == BPF_MAP_TYPE_ARENA)
+		actual_sz = map->obj->arena_data_sz;
+	else
+		actual_sz = map->def.value_size;
+	if (size != actual_sz)
 		return libbpf_err(-EINVAL);
 
 	memcpy(map->mmaped, data, size);
 	return 0;
 }
 
-void *bpf_map__initial_value(struct bpf_map *map, size_t *psize)
+void *bpf_map__initial_value(const struct bpf_map *map, size_t *psize)
 {
 	if (!map->mmaped)
 		return NULL;
-	*psize = map->def.value_size;
+
+	if (map->def.type == BPF_MAP_TYPE_ARENA)
+		*psize = map->obj->arena_data_sz;
+	else
+		*psize = map->def.value_size;
+
 	return map->mmaped;
 }
 
@@ -13510,8 +13528,8 @@ int bpf_object__load_skeleton(struct bpf_object_skeleton *s)
 			continue;
 		}
 
-		if (map->arena) {
-			*mmaped = map->arena->mmaped;
+		if (map->def.type == BPF_MAP_TYPE_ARENA) {
+			*mmaped = map->mmaped;
 			continue;
 		}
 

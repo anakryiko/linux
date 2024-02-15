@@ -82,7 +82,7 @@ static bool get_map_ident(const struct bpf_map *map, char *buf, size_t buf_sz)
 	const char *name = bpf_map__name(map);
 	int i, n;
 
-	if (!bpf_map__is_internal(map) || bpf_map__type(map) == BPF_MAP_TYPE_ARENA) {
+	if (!bpf_map__is_internal(map)) {
 		snprintf(buf, buf_sz, "%s", name);
 		return true;
 	}
@@ -109,7 +109,7 @@ static bool get_datasec_ident(const char *sec_name, char *buf, size_t buf_sz)
 	/* recognize hard coded LLVM section name */
 	if (strcmp(sec_name, ".arena.1") == 0) {
 		/* this is the name to use in skeleton */
-		strncpy(buf, "arena", buf_sz);
+		snprintf(buf, buf_sz, "arena");
 		return true;
 	}
 	for  (i = 0, n = ARRAY_SIZE(pfxs); i < n; i++) {
@@ -242,13 +242,15 @@ static const struct btf_type *find_type_for_map(struct btf *btf, const char *map
 
 static bool is_mmapable_map(const struct bpf_map *map, char *buf, size_t sz)
 {
-	if (!bpf_map__is_internal(map) || !(bpf_map__map_flags(map) & BPF_F_MMAPABLE))
-		return false;
+	size_t tmp_sz;
 
-	if (bpf_map__type(map) == BPF_MAP_TYPE_ARENA) {
-		strncpy(buf, "arena", sz);
+	if (bpf_map__type(map) == BPF_MAP_TYPE_ARENA && bpf_map__initial_value(map, &tmp_sz)) {
+		snprintf(buf, sz, "arena");
 		return true;
 	}
+
+	if (!bpf_map__is_internal(map) || !(bpf_map__map_flags(map) & BPF_F_MMAPABLE))
+		return false;
 
 	if (!get_map_ident(map, buf, sz))
 		return false;
