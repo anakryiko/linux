@@ -399,6 +399,7 @@ struct pm_scan_arg {
 
 enum procmap_query_flags {
 	PROCFS_PROCMAP_EXACT_OR_NEXT_VMA = 0x01,
+	PROCFS_PROCMAP_FILE_BACKED_VMA = 0x02,
 };
 
 enum procmap_vma_flags {

@@ -397,7 +397,7 @@ static int do_procmap_query(struct proc_maps_private *priv, void __user *uarg)
 	if (err)
 		return err;
 
-	if (karg.query_flags & ~PROCFS_PROCMAP_EXACT_OR_NEXT_VMA)
+	if (karg.query_flags & ~(PROCFS_PROCMAP_EXACT_OR_NEXT_VMA | PROCFS_PROCMAP_FILE_BACKED_VMA))
 		return -EINVAL;
 	if (!!karg.vma_name_size != !!karg.vma_name_addr)
 		return -EINVAL;
@@ -413,8 +413,16 @@ static int do_procmap_query(struct proc_maps_private *priv, void __user *uarg)
 	}
 
 	vma_iter_init(&iter, mm, karg.query_addr);
+next_vma:
 	vma = vma_next(&iter);
 	if (!vma) {
+		err = -ENOENT;
+		goto out;
+	}
+	/* user requested only file-backed VMA, keep iterating */
+	if (!vma->vm_file && (karg.query_flags & PROCFS_PROCMAP_FILE_BACKED_VMA)) {
+		if (karg.query_flags & PROCFS_PROCMAP_EXACT_OR_NEXT_VMA)
+			goto next_vma;
 		err = -ENOENT;
 		goto out;
 	}
