@@ -304,7 +304,7 @@ static bool read_proc_maps_line(struct io *io, __u64 *start, __u64 *end,
 	int err;
 
 	q.size = sizeof(q);
-	q.query_flags = PROCFS_PROCMAP_EXACT_OR_NEXT_VMA;
+	q.query_flags = PROCFS_PROCMAP_EXACT_OR_NEXT_VMA | PROCFS_PROCMAP_FILE_BACKED_VMA;
 	q.query_addr = (__u64)*next;
 	q.vma_name_addr = (__u64)(long)pathname;
 	q.vma_name_size = pathname_size;
