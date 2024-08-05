@@ -62,7 +62,6 @@ struct trace_uprobe {
 	struct uprobe			*uprobe;
 	unsigned long			offset;
 	unsigned long			ref_ctr_offset;
-	unsigned long			nhit;
 	struct trace_probe		tp;
 };
 
@@ -821,7 +820,7 @@ static int probes_profile_seq_show(struct seq_file *m, void *v)
 
 	tu = to_trace_uprobe(ev);
 	seq_printf(m, "  %s %-44s %15lu\n", tu->filename,
-			trace_probe_name(&tu->tp), tu->nhit);
+		   trace_probe_name(&tu->tp), ULONG_MAX);
 	return 0;
 }
 
@@ -1508,7 +1507,6 @@ static int uprobe_dispatcher(struct uprobe_consumer *con, struct pt_regs *regs)
 	int ret = 0;
 
 	tu = container_of(con, struct trace_uprobe, consumer);
-	tu->nhit++;
 
 	udd.tu = tu;
 	udd.bp_addr = instruction_pointer(regs);
