@@ -106,7 +106,7 @@ struct uprobe_task {
 		};
 	};
 
-	struct uprobe			*active_uprobe;
+	struct hprobe			active_hprobe;
 	struct timer_list		ri_timer;
 	unsigned long			xol_vaddr;
 
@@ -114,7 +114,7 @@ struct uprobe_task {
 
 	struct return_instance		*return_instances;
 	unsigned int			depth;
-};
+} ____cacheline_aligned;
 
 struct return_instance {
 	unsigned long		func;

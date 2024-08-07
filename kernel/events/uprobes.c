@@ -1860,11 +1860,16 @@ unsigned long __weak uprobe_get_swbp_addr(struct pt_regs *regs)
 	return instruction_pointer(regs) - UPROBE_SWBP_INSN_SIZE;
 }
 
+static bool utask_has_pending_sstep_uprobe(struct uprobe_task *utask)
+{
+	return utask->active_hprobe.stable != NULL;
+}
+
 unsigned long uprobe_get_trap_addr(struct pt_regs *regs)
 {
 	struct uprobe_task *utask = current->utask;
 
-	if (unlikely(utask && utask->active_uprobe))
+	if (unlikely(utask && utask_has_pending_sstep_uprobe(utask)))
 		return utask->vaddr;
 
 	return instruction_pointer(regs);
@@ -1893,14 +1898,17 @@ void uprobe_free_utask(struct task_struct *t)
 {
 	struct uprobe_task *utask = t->utask;
 	struct return_instance *ri;
+	struct uprobe *uprobe;
+	bool under_rcu;
 
 	if (!utask)
 		return;
 
 	timer_delete_sync(&utask->ri_timer);
 
-	if (utask->active_uprobe)
-		put_uprobe(utask->active_uprobe);
+	/* clean up pending single-stepped uprobe */
+	uprobe = hprobe_consume(&utask->active_hprobe, &under_rcu);
+	hprobe_finalize(&utask->active_hprobe, uprobe, under_rcu);
 
 	ri = utask->return_instances;
 	while (ri)
@@ -1923,6 +1931,8 @@ static void ri_timer(struct timer_list *timer)
 	guard(srcu)(&uretprobes_srcu);
 	/* RCU protects return_instance from freeing. */
 	guard(rcu)();
+
+	hprobe_expire(&utask->active_hprobe);
 
 	for_each_ret_instance_rcu(ri, utask->return_instances) {
 		hprobe_expire(&ri->hprobe);
@@ -2166,20 +2176,15 @@ pre_ssout(struct uprobe *uprobe, struct pt_regs *regs, unsigned long bp_vaddr)
 {
 	struct uprobe_task *utask;
 	unsigned long xol_vaddr;
-	int err;
+	int err, srcu_idx;
 
 	utask = get_utask();
 	if (!utask)
 		return -ENOMEM;
 
-	if (!try_get_uprobe(uprobe))
-		return -EINVAL;
-
 	xol_vaddr = xol_get_insn_slot(uprobe);
-	if (!xol_vaddr) {
-		err = -ENOMEM;
-		goto err_out;
-	}
+	if (!xol_vaddr)
+		return -ENOMEM;
 
 	utask->xol_vaddr = xol_vaddr;
 	utask->vaddr = bp_vaddr;
@@ -2187,15 +2192,18 @@ pre_ssout(struct uprobe *uprobe, struct pt_regs *regs, unsigned long bp_vaddr)
 	err = arch_uprobe_pre_xol(&uprobe->arch, regs);
 	if (unlikely(err)) {
 		xol_free_insn_slot(current);
-		goto err_out;
+		return err;
 	}
 
-	utask->active_uprobe = uprobe;
+	srcu_idx = __srcu_read_lock(&uretprobes_srcu);
+
+	hprobe_init_leased(&utask->active_hprobe, uprobe, srcu_idx);
 	utask->state = UTASK_SSTEP;
+
+	if (!timer_pending(&utask->ri_timer))
+		mod_timer(&utask->ri_timer, jiffies + RI_TIMER_PERIOD);
+
 	return 0;
-err_out:
-	put_uprobe(uprobe);
-	return err;
 }
 
 /*
@@ -2212,7 +2220,7 @@ bool uprobe_deny_signal(void)
 	struct task_struct *t = current;
 	struct uprobe_task *utask = t->utask;
 
-	if (likely(!utask || !utask->active_uprobe))
+	if (likely(!utask || !utask_has_pending_sstep_uprobe(utask)))
 		return false;
 
 	WARN_ON_ONCE(utask->state != UTASK_SSTEP);
@@ -2529,8 +2537,10 @@ static void handle_singlestep(struct uprobe_task *utask, struct pt_regs *regs)
 {
 	struct uprobe *uprobe;
 	int err = 0;
+	bool under_rcu;
 
-	uprobe = utask->active_uprobe;
+	uprobe = hprobe_consume(&utask->active_hprobe, &under_rcu);
+
 	if (utask->state == UTASK_SSTEP_ACK)
 		err = arch_uprobe_post_xol(&uprobe->arch, regs);
 	else if (utask->state == UTASK_SSTEP_TRAPPED)
@@ -2538,8 +2548,8 @@ static void handle_singlestep(struct uprobe_task *utask, struct pt_regs *regs)
 	else
 		WARN_ON_ONCE(1);
 
-	put_uprobe(uprobe);
-	utask->active_uprobe = NULL;
+	hprobe_finalize(&utask->active_hprobe, uprobe, under_rcu);
+
 	utask->state = UTASK_RUNNING;
 	xol_free_insn_slot(current);
 
@@ -2556,7 +2566,7 @@ static void handle_singlestep(struct uprobe_task *utask, struct pt_regs *regs)
 /*
  * On breakpoint hit, breakpoint notifier sets the TIF_UPROBE flag and
  * allows the thread to return from interrupt. After that handle_swbp()
- * sets utask->active_uprobe.
+ * sets utask->active_hprobe.
  *
  * On singlestep exception, singlestep notifier sets the TIF_UPROBE flag
  * and allows the thread to return from interrupt.
@@ -2571,7 +2581,7 @@ void uprobe_notify_resume(struct pt_regs *regs)
 	clear_thread_flag(TIF_UPROBE);
 
 	utask = current->utask;
-	if (utask && utask->active_uprobe)
+	if (utask && utask_has_pending_sstep_uprobe(utask))
 		handle_singlestep(utask, regs);
 	else
 		handle_swbp(regs);
@@ -2602,7 +2612,7 @@ int uprobe_post_sstep_notifier(struct pt_regs *regs)
 {
 	struct uprobe_task *utask = current->utask;
 
-	if (!current->mm || !utask || !utask->active_uprobe)
+	if (!current->mm || !utask || !utask_has_pending_sstep_uprobe(utask))
 		/* task is currently not uprobed */
 		return 0;
 
