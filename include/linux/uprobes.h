@@ -93,6 +93,7 @@ struct hprobe {
  */
 struct uprobe_task {
 	enum uprobe_task_state		state;
+	bool				deny_signal;
 
 	union {
 		struct {
