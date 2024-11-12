@@ -25,6 +25,13 @@ static __always_inline void inc_counter(void)
 	__sync_add_and_fetch(&hits[cpu & CPU_MASK].value, 1);
 }
 
+static __always_inline void inc_counter_batch(long cnt)
+{
+	int cpu = bpf_get_smp_processor_id();
+
+	__sync_add_and_fetch(&hits[cpu & CPU_MASK].value, cnt);
+}
+
 SEC("?uprobe")
 int bench_trigger_uprobe(void *ctx)
 {
@@ -75,6 +82,46 @@ int trigger_driver_kfunc(void *ctx)
 
 	return 0;
 }
+
+SEC("?raw_tp/sys_enter")
+int trigger_driver_ktime(void *ctx)
+{
+	volatile __u64 total = 0;
+	int i;
+
+	for (i = 0; i < batch_iters; i++) {
+		__u64 start, end;
+
+		start = bpf_ktime_get_ns();
+		end = bpf_ktime_get_ns();
+		total += end - start;
+	}
+	inc_counter_batch(batch_iters);
+
+	return 0;
+}
+
+extern __u64 bpf_get_cpu_cycles(void) __weak __ksym;
+extern __u64 bpf_cpu_cycles_to_ns(__u64 cycles) __weak __ksym;
+
+SEC("?raw_tp/sys_enter")
+int trigger_driver_cycles(void *ctx)
+{
+	volatile __u64 total = 0;
+	int i;
+
+	for (i = 0; i < batch_iters; i++) {
+		__u64 start, end;
+
+		start = bpf_get_cpu_cycles();
+		end = bpf_get_cpu_cycles();
+		total += bpf_cpu_cycles_to_ns(end - start);
+	}
+	inc_counter_batch(batch_iters);
+
+	return 0;
+}
+
 
 SEC("?kprobe/bpf_get_numa_node_id")
 int bench_trigger_kprobe(void *ctx)

@@ -116,10 +116,10 @@ static void *trigger_producer(void *input)
 
 static void *trigger_producer_batch(void *input)
 {
-	int fd = ctx.driver_prog_fd ?: bpf_program__fd(ctx.skel->progs.trigger_driver);
+	//int fd = ctx.driver_prog_fd ?: bpf_program__fd(ctx.skel->progs.trigger_driver);
 
 	while (true)
-		bpf_prog_test_run_opts(fd, NULL);
+		(void)syscall(__NR_getpgid);
 
 	return NULL;
 }
@@ -269,6 +269,29 @@ static void trigger_rawtp_setup(void)
 	ctx.driver_prog_fd = bpf_program__fd(ctx.skel->progs.trigger_driver_kfunc);
 	attach_bpf(ctx.skel->progs.bench_trigger_rawtp);
 }
+
+static void trigger_ktime_setup(void)
+{
+	setup_ctx();
+	bpf_program__set_autoload(ctx.skel->progs.trigger_driver, false);
+	bpf_program__set_autoload(ctx.skel->progs.trigger_driver_ktime, true);
+	load_ctx();
+	/* override driver program */
+	ctx.driver_prog_fd = bpf_program__fd(ctx.skel->progs.trigger_driver_ktime);
+	attach_bpf(ctx.skel->progs.trigger_driver_ktime);
+}
+
+static void trigger_cycles_setup(void)
+{
+	setup_ctx();
+	bpf_program__set_autoload(ctx.skel->progs.trigger_driver, false);
+	bpf_program__set_autoload(ctx.skel->progs.trigger_driver_cycles, true);
+	load_ctx();
+	/* override driver program */
+	ctx.driver_prog_fd = bpf_program__fd(ctx.skel->progs.trigger_driver_cycles);
+	attach_bpf(ctx.skel->progs.trigger_driver_cycles);
+}
+
 
 /* make sure call is not inlined and not avoided by compiler, so __weak and
  * inline asm volatile in the body of the function
@@ -480,6 +503,9 @@ BENCH_TRIG_KERNEL(fexit, "fexit");
 BENCH_TRIG_KERNEL(fmodret, "fmodret");
 BENCH_TRIG_KERNEL(tp, "tp");
 BENCH_TRIG_KERNEL(rawtp, "rawtp");
+
+BENCH_TRIG_KERNEL(ktime, "ktime");
+BENCH_TRIG_KERNEL(cycles, "cycles");
 
 /* uprobe benchmarks */
 #define BENCH_TRIG_USERMODE(KIND, PRODUCER, NAME)			\
