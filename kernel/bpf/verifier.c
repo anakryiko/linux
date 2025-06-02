@@ -405,7 +405,8 @@ static bool reg_not_null(const struct bpf_reg_state *reg)
 		type == PTR_TO_MAP_KEY ||
 		type == PTR_TO_SOCK_COMMON ||
 		(type == PTR_TO_BTF_ID && is_trusted_reg(reg)) ||
-		type == PTR_TO_MEM;
+		type == PTR_TO_MEM ||
+		type == PTR_TO_MEMCAST;
 }
 
 static struct btf_record *reg_btf_record(const struct bpf_reg_state *reg)
@@ -4861,6 +4862,7 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
 	case PTR_TO_FUNC:
 	case PTR_TO_MAP_KEY:
 	case PTR_TO_ARENA:
+	case PTR_TO_MEMCAST:
 		return true;
 	default:
 		return false;
@@ -6402,6 +6404,7 @@ static int check_ptr_alignment(struct bpf_verifier_env *env,
 		pointer_desc = "xdp_sock ";
 		break;
 	case PTR_TO_ARENA:
+	case PTR_TO_MEMCAST:
 		return 0;
 	default:
 		break;
@@ -7493,6 +7496,16 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 					      reg->mem_size, false);
 		if (!err && value_regno >= 0 && (t == BPF_READ || rdonly_mem))
 			mark_reg_unknown(env, regs, value_regno);
+	} else if (reg->type == PTR_TO_MEMCAST) {
+		if (t == BPF_WRITE) {
+			verbose(env, "R%d cannot write into %s\n", regno, "memcast");
+			return -EACCES;
+		}
+		if (value_regno < 0) {
+			verbose(env, "R%d cannot be passed into helper/kfunc\n", regno);
+			return -EACCES;
+		}
+		mark_reg_unknown(env, regs, value_regno);
 	} else if (reg->type == PTR_TO_CTX) {
 		struct bpf_retval_range range;
 		struct bpf_insn_access_aux info = {
@@ -9299,6 +9312,7 @@ static int check_func_arg_reg_off(struct bpf_verifier_env *env,
 	case PTR_TO_BUF:
 	case PTR_TO_BUF | MEM_RDONLY:
 	case PTR_TO_ARENA:
+	case PTR_TO_MEMCAST:
 	case SCALAR_VALUE:
 		return 0;
 	/* All the rest must be rejected, except PTR_TO_BTF_ID which allows
@@ -10330,10 +10344,12 @@ static int btf_check_func_arg_match(struct bpf_verifier_env *env, int subprog,
 		struct bpf_subprog_arg_info *arg = &sub->args[i];
 
 		if (arg->arg_type == ARG_ANYTHING) {
+			/*
 			if (reg->type != SCALAR_VALUE) {
 				bpf_log(log, "R%d is not a scalar\n", regno);
 				return -EINVAL;
 			}
+			*/
 		} else if (arg->arg_type == ARG_PTR_TO_CTX) {
 			ret = check_func_arg_reg_off(env, reg, regno, ARG_DONTCARE);
 			if (ret < 0)
@@ -12074,6 +12090,7 @@ enum special_kfunc_type {
 	KF_bpf_list_back,
 	KF_bpf_cast_to_kern_ctx,
 	KF_bpf_rdonly_cast,
+	KF_bpf_mem_cast,
 	KF_bpf_rcu_read_lock,
 	KF_bpf_rcu_read_unlock,
 	KF_bpf_rbtree_remove,
@@ -12122,6 +12139,7 @@ BTF_ID(func, bpf_list_front)
 BTF_ID(func, bpf_list_back)
 BTF_ID(func, bpf_cast_to_kern_ctx)
 BTF_ID(func, bpf_rdonly_cast)
+BTF_ID(func, bpf_mem_cast)
 BTF_ID(func, bpf_rcu_read_lock)
 BTF_ID(func, bpf_rcu_read_unlock)
 BTF_ID(func, bpf_rbtree_remove)
@@ -13547,6 +13565,9 @@ static int check_special_kfunc(struct bpf_verifier_env *env, struct bpf_kfunc_ca
 		regs[BPF_REG_0].type = PTR_TO_BTF_ID | PTR_UNTRUSTED;
 		regs[BPF_REG_0].btf = desc_btf;
 		regs[BPF_REG_0].btf_id = meta->arg_constant.value;
+	} else if (meta->func_id == special_kfunc_list[KF_bpf_mem_cast]) {
+		__mark_reg_unbounded(&regs[BPF_REG_0]);
+		regs[BPF_REG_0].type = PTR_TO_MEMCAST;
 	} else if (meta->func_id == special_kfunc_list[KF_bpf_dynptr_slice] ||
 		   meta->func_id == special_kfunc_list[KF_bpf_dynptr_slice_rdwr]) {
 		enum bpf_type_flag type_flag = get_dynptr_type_flag(meta->initialized_dynptr.type);
@@ -13944,6 +13965,9 @@ static bool check_reg_sane_offset(struct bpf_verifier_env *env,
 	bool known = tnum_is_const(reg->var_off);
 	s64 val = reg->var_off.value;
 	s64 smin = reg->smin_value;
+
+	if (type == PTR_TO_MEMCAST)
+		return true;
 
 	if (known && (val >= BPF_MAX_VAR_OFF || val <= -BPF_MAX_VAR_OFF)) {
 		verbose(env, "math between %s pointer and %lld is not allowed\n",
@@ -14353,6 +14377,7 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 	case PTR_TO_TP_BUFFER:
 	case PTR_TO_BTF_ID:
 	case PTR_TO_MEM:
+	case PTR_TO_MEMCAST:
 	case PTR_TO_BUF:
 	case PTR_TO_FUNC:
 	case CONST_PTR_TO_DYNPTR:
@@ -15204,6 +15229,10 @@ static int adjust_reg_min_max_vals(struct bpf_verifier_env *env,
 
 	dst_reg = &regs[insn->dst_reg];
 	src_reg = NULL;
+
+	if (dst_reg->type == PTR_TO_MEMCAST)
+		/* Any arithmetic operations are allowed on memcast pointers */
+		return 0;
 
 	if (dst_reg->type == PTR_TO_ARENA) {
 		struct bpf_insn_aux_data *aux = cur_aux(env);
@@ -18459,6 +18488,7 @@ static bool regsafe(struct bpf_verifier_env *env, struct bpf_reg_state *rold,
 		 */
 		return regs_exact(rold, rcur, idmap) && rold->frameno == rcur->frameno;
 	case PTR_TO_ARENA:
+	case PTR_TO_MEMCAST:
 		return true;
 	default:
 		return regs_exact(rold, rcur, idmap);
@@ -19359,6 +19389,7 @@ static bool reg_type_mismatch_ok(enum bpf_reg_type type)
 	case PTR_TO_XDP_SOCK:
 	case PTR_TO_BTF_ID:
 	case PTR_TO_ARENA:
+	case PTR_TO_MEMCAST:
 		return false;
 	default:
 		return true;
@@ -20945,6 +20976,7 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 		 * for this case.
 		 */
 		case PTR_TO_BTF_ID | MEM_ALLOC | PTR_UNTRUSTED:
+		case PTR_TO_MEMCAST:
 			if (type == BPF_READ) {
 				if (BPF_MODE(insn->code) == BPF_MEM)
 					insn->code = BPF_LDX | BPF_PROBE_MEM |
