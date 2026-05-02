@@ -802,7 +802,7 @@ TRUNNER_EXTRA_SOURCES := test_progs.c		\
 			 flow_dissector_load.h	\
 			 ip_check_defrag_frags.h	\
 			 bpftool_helpers.c	\
-			 usdt_1.c usdt_2.c	\
+			 usdt_1.c usdt_2.c usdt_red_zone.c	\
 			 $(LIBARENA_SKEL)	\
 			 $(LIBARENA_ASAN_SKEL)
 TRUNNER_LIB_SOURCES := find_bit.c
