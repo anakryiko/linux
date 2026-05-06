@@ -9,10 +9,13 @@
  */
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/smp.h>
 #include <linux/ptrace.h>
 #include <linux/uprobes.h>
 #include <linux/uaccess.h>
 #include <linux/syscalls.h>
+#include <linux/wait.h>
 
 #include <linux/kdebug.h>
 #include <asm/processor.h>
@@ -720,11 +723,111 @@ static struct uprobe_trampoline *create_uprobe_trampoline(unsigned long vaddr)
 	return tramp;
 }
 
+/*
+ * Poisoned slot: a thread was detected inside the trampoline slot during
+ * free. The slot can never be reused because the thread may still be
+ * executing in the slot's userspace code.
+ *
+ * get_state_synchronize_rcu() never returns values with low bits set
+ * (it clears the low 2 bits), so 0x1 is safe as a sentinel that can't
+ * collide with a real RCU cookie.
+ */
+#define SLOT_FREED_POISONED	0x1UL
+
+struct slot_check_data {
+	struct mm_struct	*mm;
+	unsigned long		slot_start;
+	unsigned long		slot_end;
+	bool			found;
+};
+
+static void check_slot_on_cpu(void *info)
+{
+	struct slot_check_data *data = info;
+	unsigned long ip;
+
+	if (READ_ONCE(current->mm) != data->mm)
+		return;
+
+	ip = instruction_pointer(task_pt_regs(current));
+	if (ip >= data->slot_start && ip <= data->slot_end)
+		WRITE_ONCE(data->found, true);
+}
+
+static int check_slot_on_task(struct task_struct *t, void *info)
+{
+	struct slot_check_data *data = info;
+	unsigned long ip;
+
+	if (READ_ONCE(t->mm) != data->mm)
+		return 0;
+
+	/*
+	 * The IPI pass already sampled tasks that were running at that point.
+	 * If this task is running now, it might have woken after the IPI pass,
+	 * and its live IP is not safely readable from this CPU. Treat that as
+	 * in use so the slot is poisoned conservatively.
+	 */
+	if (task_curr(t))
+		return 1;
+
+	ip = instruction_pointer(task_pt_regs(t));
+	return ip >= data->slot_start && ip <= data->slot_end;
+}
+
+/*
+ * Check if any task sharing the current mm has its instruction pointer
+ * inside the given trampoline slot. Called after swbp_unoptimize() which
+ * replaced the JMP with the original instruction via int3-mediated
+ * patching (so no new threads can enter the slot).
+ *
+ * Check running tasks first by sending an IPI, so the check runs on each
+ * task's own CPU with accurate register state. Then check other tasks with
+ * task_call_func(), which pins their scheduler state while checking whether
+ * saved pt_regs are safe to inspect. Include CLONE_VM tasks outside current's
+ * thread group.
+ */
+static bool tramp_slot_in_use(struct uprobe_trampoline *tramp, int slot)
+{
+	unsigned long slot_start = tramp->vaddr + slot * UPROBE_TRAMP_SLOT_SIZE;
+	struct slot_check_data data = {
+		.mm = current->mm,
+		.slot_start = slot_start,
+		.slot_end = slot_start + UPROBE_TRAMP_SLOT_SIZE,
+	};
+	struct task_struct *p, *t;
+
+	smp_call_function(check_slot_on_cpu, &data, 1);
+	if (READ_ONCE(data.found))
+		return true;
+
+	rcu_read_lock();
+	for_each_process_thread(p, t) {
+		int ret;
+
+		if (t == current)
+			continue;
+		if (READ_ONCE(t->mm) != data.mm)
+			continue;
+
+		ret = task_call_func(t, check_slot_on_task, &data);
+		if (ret) {
+			rcu_read_unlock();
+			return true;
+		}
+	}
+	rcu_read_unlock();
+
+	return false;
+}
+
 static int tramp_alloc_slot(struct uprobe_trampoline *tramp, unsigned long probe_addr)
 {
 	int i;
 
 	for (i = 0; i < UPROBE_TRAMP_MAX_SLOTS; i++) {
+		if (tramp->freed_gen[i] == SLOT_FREED_POISONED)
+			continue;
 		/* actively used slot */
 		if (tramp->freed_gen[i] == 0 && tramp->probe_addrs[i])
 			continue;
@@ -742,7 +845,10 @@ static void tramp_free_slot(struct uprobe_trampoline *tramp, int slot)
 {
 	if (slot >= UPROBE_TRAMP_MAX_SLOTS)
 		return;
-	tramp->freed_gen[slot] = get_state_synchronize_rcu();
+	if (tramp_slot_in_use(tramp, slot))
+		tramp->freed_gen[slot] = SLOT_FREED_POISONED;
+	else
+		tramp->freed_gen[slot] = get_state_synchronize_rcu();
 }
 
 static struct uprobe_trampoline *get_uprobe_trampoline(unsigned long vaddr, bool *new)
@@ -843,6 +949,8 @@ static void tramp_free_probe(struct mm_struct *mm, unsigned long probe_addr)
 		int i;
 
 		for (i = 0; i < UPROBE_TRAMP_MAX_SLOTS; i++) {
+			if (tramp->freed_gen[i] != 0)
+				continue;
 			if (tramp->probe_addrs[i] == probe_addr) {
 				tramp_free_slot(tramp, i);
 				return;
