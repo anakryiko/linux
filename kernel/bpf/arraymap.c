@@ -18,7 +18,17 @@
 
 #define ARRAY_CREATE_FLAG_MASK \
 	(BPF_F_NUMA_NODE | BPF_F_MMAPABLE | BPF_F_ACCESS_MASK | \
-	 BPF_F_PRESERVE_ELEMS | BPF_F_INNER_MAP)
+	 BPF_F_PRESERVE_ELEMS | BPF_F_INNER_MAP | \
+	 BPF_F_HUGEPAGE | BPF_F_GIGAPAGE)
+
+static unsigned int array_huge_page_shift(u32 map_flags)
+{
+	if (map_flags & BPF_F_GIGAPAGE)
+		return PUD_SHIFT;
+	if (map_flags & BPF_F_HUGEPAGE)
+		return PMD_SHIFT;
+	return 0;
+}
 
 static void bpf_array_free_percpu(struct bpf_array *array)
 {
@@ -70,6 +80,25 @@ int array_map_alloc_check(union bpf_attr *attr)
 	if (attr->map_type != BPF_MAP_TYPE_PERF_EVENT_ARRAY &&
 	    attr->map_flags & BPF_F_PRESERVE_ELEMS)
 		return -EINVAL;
+
+	if (attr->map_flags & (BPF_F_HUGEPAGE | BPF_F_GIGAPAGE)) {
+		unsigned int shift;
+
+		/* HUGEPAGE and GIGAPAGE are mutually exclusive. */
+		if ((attr->map_flags & BPF_F_HUGEPAGE) &&
+		    (attr->map_flags & BPF_F_GIGAPAGE))
+			return -EINVAL;
+		/* Only plain ARRAY (single contiguous buffer). Not percpu,
+		 * not fd-array, not inner-map, not mmapable (v1).
+		 */
+		if (attr->map_type != BPF_MAP_TYPE_ARRAY)
+			return -EINVAL;
+		if (attr->map_flags & (BPF_F_MMAPABLE | BPF_F_INNER_MAP))
+			return -EINVAL;
+		shift = (attr->map_flags & BPF_F_GIGAPAGE) ? PUD_SHIFT : PMD_SHIFT;
+		if (!bpf_map_huge_page_supported(shift))
+			return -EOPNOTSUPP;
+	}
 
 	/* avoid overflow on round_up(map->value_size) */
 	if (attr->value_size > INT_MAX)
@@ -138,6 +167,13 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 			return ERR_PTR(-ENOMEM);
 		array = data + PAGE_ALIGN(sizeof(struct bpf_array))
 			- offsetof(struct bpf_array, value);
+	} else if (attr->map_flags & (BPF_F_HUGEPAGE | BPF_F_GIGAPAGE)) {
+		/* Single physically-contiguous, naturally-aligned allocation
+		 * served from the kernel direct map, so accesses to the value
+		 * buffer go through PMD- or PUD-sized TLB entries.
+		 */
+		array = bpf_map_area_alloc_huge(array_size, numa_node,
+						array_huge_page_shift(attr->map_flags));
 	} else {
 		array = bpf_map_area_alloc(array_size, numa_node);
 	}
@@ -498,10 +534,23 @@ static void array_map_free(struct bpf_map *map)
 	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
 		bpf_array_free_percpu(array);
 
-	if (array->map.map_flags & BPF_F_MMAPABLE)
+	if (array->map.map_flags & BPF_F_MMAPABLE) {
 		bpf_map_area_free(array_map_vmalloc_addr(array));
-	else
+	} else if (array->map.map_flags & (BPF_F_HUGEPAGE | BPF_F_GIGAPAGE)) {
+		/* Mirror the entries count used at alloc time: with Spectre v1
+		 * mitigation the buffer was sized to the next power of two
+		 * (index_mask + 1) rather than to map.max_entries.
+		 */
+		u64 entries = array->map.bypass_spec_v1 ?
+			      array->map.max_entries :
+			      (u64)array->index_mask + 1;
+		u64 size = (u64)sizeof(*array) + entries * array->elem_size;
+
+		bpf_map_area_free_huge(array, size,
+				       array_huge_page_shift(array->map.map_flags));
+	} else {
 		bpf_map_area_free(array);
+	}
 }
 
 static void array_map_seq_show_elem(struct bpf_map *map, void *key,
@@ -794,6 +843,12 @@ static u64 array_map_mem_usage(const struct bpf_map *map)
 			usage += PAGE_ALIGN(entries * elem_size);
 		} else {
 			usage += entries * elem_size;
+		}
+		if (map->map_flags & (BPF_F_HUGEPAGE | BPF_F_GIGAPAGE)) {
+			unsigned long huge_size =
+				1UL << array_huge_page_shift(map->map_flags);
+
+			usage = round_up(usage, huge_size);
 		}
 	}
 	return usage;

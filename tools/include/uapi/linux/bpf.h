@@ -1457,6 +1457,18 @@ enum {
 
 /* Enable BPF ringbuf overwrite mode */
 	BPF_F_RB_OVERWRITE	= (1U << 19),
+
+/* Back the map's value buffer with PMD-sized huge pages (e.g. 2MB on
+ * x86_64). The kernel will fail map creation if the arch cannot satisfy
+ * this. Currently only BPF_MAP_TYPE_ARRAY is supported.
+ */
+	BPF_F_HUGEPAGE		= (1U << 20),
+
+/* Back the map's value buffer with PUD-sized gigantic pages (e.g. 1GB
+ * on x86_64). Requires CONFIG_CONTIG_ALLOC and an arch with a PUD leaf
+ * mapping. Currently only BPF_MAP_TYPE_ARRAY is supported.
+ */
+	BPF_F_GIGAPAGE		= (1U << 21),
 };
 
 /* Flags for BPF_PROG_QUERY. */

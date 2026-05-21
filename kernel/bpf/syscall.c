@@ -421,6 +421,81 @@ void bpf_map_area_free(void *area)
 	kvfree(area);
 }
 
+/* Report whether the kernel can satisfy a request for a single
+ * @page_shift-sized direct-map page (PMD_SHIFT or PUD_SHIFT). Used to
+ * validate BPF_F_HUGEPAGE / BPF_F_GIGAPAGE at map create time.
+ */
+bool bpf_map_huge_page_supported(unsigned int page_shift)
+{
+	if (!IS_ENABLED(CONFIG_CONTIG_ALLOC))
+		return false;
+	if (page_shift == PMD_SHIFT)
+		return PMD_SHIFT > PAGE_SHIFT;
+	if (page_shift == PUD_SHIFT)
+		return PUD_SHIFT > PMD_SHIFT;
+	return false;
+}
+
+#ifdef CONFIG_CONTIG_ALLOC
+/* Allocate a single physically-contiguous block of @size bytes, rounded
+ * up to 1 << @page_shift, on @numa_node. Returns the direct-map virtual
+ * address; because the underlying physical range is naturally aligned to
+ * @page_shift and the kernel linear map uses the largest possible PTE
+ * size, accesses go through a single PMD- or PUD-sized TLB entry.
+ *
+ * The allocation is not refcounted as a compound page; free with
+ * bpf_map_area_free_huge() passing the original @size and @page_shift.
+ */
+void *bpf_map_area_alloc_huge(u64 size, int numa_node, unsigned int page_shift)
+{
+	unsigned long huge_size = 1UL << page_shift;
+	unsigned long nr_pages;
+	struct page *page;
+	void *area;
+
+	if (!bpf_map_huge_page_supported(page_shift))
+		return NULL;
+	if (size > U64_MAX - huge_size + 1)
+		return NULL;
+
+	nr_pages = round_up(size, huge_size) >> PAGE_SHIFT;
+
+	/* alloc_contig_pages() ignores __GFP_ZERO and (largely) __GFP_ACCOUNT;
+	 * we zero by hand and rely on the map-create-side memcg charging that
+	 * the caller already performs for other large allocations.
+	 */
+	page = alloc_contig_pages(nr_pages,
+				  GFP_KERNEL | __GFP_NOWARN | __GFP_RETRY_MAYFAIL,
+				  numa_node, NULL);
+	if (!page)
+		return NULL;
+
+	area = page_address(page);
+	memset(area, 0, nr_pages << PAGE_SHIFT);
+	return area;
+}
+
+void bpf_map_area_free_huge(void *area, u64 size, unsigned int page_shift)
+{
+	unsigned long huge_size = 1UL << page_shift;
+	unsigned long nr_pages;
+
+	if (!area)
+		return;
+	nr_pages = round_up(size, huge_size) >> PAGE_SHIFT;
+	free_contig_range(page_to_pfn(virt_to_page(area)), nr_pages);
+}
+#else
+void *bpf_map_area_alloc_huge(u64 size, int numa_node, unsigned int page_shift)
+{
+	return NULL;
+}
+
+void bpf_map_area_free_huge(void *area, u64 size, unsigned int page_shift)
+{
+}
+#endif
+
 static u32 bpf_map_flags_retain_permanent(u32 flags)
 {
 	/* Some map creation flags are not tied to the map object but
